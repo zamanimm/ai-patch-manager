@@ -1,0 +1,11 @@
+PySide6>=6.5
+lxml>=4.9
+# Tree-Sitter (symbol targeting). Per-language grammar packages work with
+# current tree-sitter on every Python version (incl. 3.13+).
+tree-sitter>=0.22
+tree-sitter-python
+tree-sitter-javascript
+tree-sitter-typescript
+tree-sitter-java
+tree-sitter-c
+tree-sitter-cpp

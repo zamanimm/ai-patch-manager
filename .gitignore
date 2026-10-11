@@ -1,0 +1,7 @@
+# Python bytecode cache
+__pycache__/node_modules/
+.next/
+dist/
+build/
+*.log
+config
