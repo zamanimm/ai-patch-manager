@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <project>
   <name>Untitled</name>
-  <root>D:\Atlas\.obsidian\plugins\any-rtl</root>
+  <root></root>
   <include/>
   <exclude>
     <pattern>**/.git/**</pattern>
@@ -12,9 +12,6 @@
     <pattern>**/backups/**</pattern>
     <pattern>**/storage/**</pattern>
   </exclude>
-  <rules>
-    <rule>- Do not change non-related parts</rule>
-  </rules>
   <settings>
     <exact_match>true</exact_match>
     <hash_validation>true</hash_validation>
@@ -28,10 +25,6 @@
     <auto_apply>false</auto_apply>
     <include_system>false</include_system>
     <include_files>true</include_files>
-    <include_symbol>false</include_symbol>
-    <include_user_rules>false</include_user_rules>
-    <include_errors>true</include_errors>
-    <include_binary_files>false</include_binary_files>
     <include_project_tree>false</include_project_tree>
     <fuzzy_threshold>0.9</fuzzy_threshold>
   </settings>

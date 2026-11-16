@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from qtpy.QtWidgets import (QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit,
                                QPushButton, QVBoxLayout, QWidget)
+from core.qt_compat import exec_qt
 from ui.code_editor import mono_font
 from ui.find_bar import wrap_with_find_bar
 from ui.highlight import CodeHighlighter
@@ -111,7 +112,7 @@ class ResponseView(QWidget):
             "The model flagged something you may need to know. "
             "This has not been independently verified:\n\n" + text)
         dialog.setStandardButtons(QMessageBox.Ok)
-        dialog.exec()
+        exec_qt(dialog)
 
     def _on_text_edited(self):
         """Typed / replaced text no longer matches what was parsed."""

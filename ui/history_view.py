@@ -12,9 +12,10 @@ import time
 
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
-from qtpy.QtWidgets import (QHeaderView, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSplitter,
+from qtpy.QtWidgets import (QHeaderView, QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit, QPushButton, QSplitter,
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
+from core.qt_compat import exec_qt
 from ui.find_bar import wrap_with_find_bar
 from ui.diff_view import DiffView
 
@@ -56,6 +57,13 @@ class HistoryView(QWidget):
         diff_container = QWidget()
         diff_layout = QVBoxLayout(diff_container)
         diff_layout.setContentsMargins(0, 0, 0, 0)
+        diff_layout.addWidget(QLabel("Transaction note / selected change reason:"))
+        self.details = QPlainTextEdit()
+        self.details.setReadOnly(True)
+        self.details.setPlaceholderText("Select a transaction or change to view its note and reason.")
+        self.details.setMaximumHeight(125)
+        self.details.setMinimumHeight(55)
+        diff_layout.addWidget(self.details)
         diff_layout.addWidget(QLabel("Diff vs Previous:"))
         self.diff_view = DiffView()
         diff_layout.addWidget(wrap_with_find_bar(self.diff_view), 1)
@@ -114,6 +122,7 @@ class HistoryView(QWidget):
         self.tree.clear()
         self._loaded_count = 0
         self._load_history_page()
+        self._update_details()
 
     def _load_older(self):
         self._load_history_page()
@@ -152,7 +161,18 @@ class HistoryView(QWidget):
             summary_item = QTreeWidgetItem([f"Task: {task_summary}", "", ""])
             summary_item.setForeground(0, QColor("#666666"))
             tx_item.addChild(summary_item)
-            
+            if tx.response_note and tx.response_note.get("text"):
+                notice = tx.response_note
+                title = "AI warning" if notice.get("type") == "warning" else "AI note"
+                note_item = QTreeWidgetItem([f"{title}: {notice['text'][:110]}", "", ""])
+                note_item.setToolTip(0, notice["text"])
+                note_item.setForeground(0, QColor("#b5651d" if notice.get("type") == "warning" else "#666666"))
+                tx_item.addChild(note_item)
+            elif tx.response_notes:
+                note_item = QTreeWidgetItem([f"AI notes: {tx.response_notes[:110]}", "", ""])
+                note_item.setToolTip(0, tx.response_notes)
+                tx_item.addChild(note_item)
+
             # Add files as children
             for f in tx.files:
                 file_label = (f"{f.path} → {f.new_path}  •  {f.operation}" if f.new_path
@@ -189,6 +209,12 @@ class HistoryView(QWidget):
                     if change_status == "rolled back":
                         change_item.setForeground(0, QColor("#cc6600"))
                     file_item.addChild(change_item)
+                    if change_data.get("reason"):
+                        reason_item = QTreeWidgetItem([
+                            "Reason: " + str(change_data["reason"])[:110], "", ""])
+                        reason_item.setToolTip(0, str(change_data["reason"]))
+                        reason_item.setForeground(0, QColor("#666666"))
+                        change_item.addChild(reason_item)
             
             # Expand transaction by default to show files
             tx_item.setExpanded(True)
@@ -214,12 +240,47 @@ class HistoryView(QWidget):
         return None
 
     def _current_change_id(self):
+        # Reason text is a child row of its Change; selecting it must still
+        # reveal the full Change reason and let users inspect that Change.
         item = self.tree.currentItem()
-        return item.data(0, Qt.UserRole + 2) if item else None
+        while item is not None:
+            change_id = item.data(0, Qt.UserRole + 2)
+            if change_id:
+                return change_id
+            item = item.parent()
+        return None
 
     def _selection_changed(self):
+        self._update_details()
         self._update_diff()
         self._update_actions()
+
+    def _update_details(self):
+        """Always show historical reasons and AI notes as untrusted plain text."""
+        tx_id = self._current_id()
+        tx = self.ctrl.history.get(tx_id) if tx_id else None
+        if tx is None:
+            self.details.clear()
+            return
+        lines = []
+        if tx.response_note and tx.response_note.get("text"):
+            note_type = tx.response_note.get("type", "info").upper()
+            lines.append(f"AI NOTE [{note_type}, unverified]: {tx.response_note['text']}")
+        elif tx.response_notes:
+            lines.append(f"AI NOTES [INFO, unverified]: {tx.response_notes}")
+        change_id = self._current_change_id()
+        if change_id:
+            change = next((c for c in tx.change_records
+                           if str(c.get("id")) == str(change_id)), None)
+            if change is not None:
+                lines.append(f"Change: {change_id}")
+                if change.get("reason"):
+                    lines.append("Reason: " + str(change["reason"]))
+                if change.get("summary"):
+                    lines.append("Summary: " + str(change["summary"]))
+        if not lines:
+            lines.append("No AI note or change reason was recorded for this selection.")
+        self.details.setPlainText("\n\n".join(lines))
 
     def _update_actions(self):
         tx_id = self._current_id()
@@ -263,7 +324,7 @@ class HistoryView(QWidget):
         except Exception:
             disk = None
         versions = self.ctrl.history.file_versions(root, tx, rel)
-        FileViewDialog(rel, versions, disk_path=disk, parent=self).exec()
+        exec_qt(FileViewDialog(rel, versions, disk_path=disk, parent=self))
 
     def _view(self):
         tx_id = self._current_id()
@@ -272,7 +333,17 @@ class HistoryView(QWidget):
             return
         lines = [f"Transaction {tx.id} ({tx.human_time()}) status={tx.status}",
                  f"Project: {tx.project}", f"Task: {tx.task}",
-                 f"Summary: {tx.summary}", f"Backup: {tx.backup_dir}", "", "Files:"]
+                 f"Summary: {tx.summary}", f"Backup: {tx.backup_dir}"]
+        if tx.response_note and tx.response_note.get("text"):
+            lines.extend(["", "AI note (unverified):",
+                          f"  [{tx.response_note.get('type', 'info')}] {tx.response_note['text']}"])
+        elif tx.response_notes:
+            lines.extend(["", "Legacy notes (unverified):", "  " + tx.response_notes])
+        if tx.change_records:
+            lines.extend(["", "Change reasons:"])
+            for record in tx.change_records:
+                lines.append(f"  • {record.get('id', '-')}: {record.get('reason') or '(no reason provided)'}")
+        lines.extend(["", "Files:"])
         for f in tx.files:
             lines.append(f"  • {f.path}  [{f.operation}]  changes={','.join(f.change_ids)}")
             lines.append(f"      old_hash={f.old_hash[:12] or '-'}  new_hash={f.new_hash[:12] or '-'}")

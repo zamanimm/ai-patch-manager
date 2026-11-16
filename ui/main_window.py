@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (QApplication, QComboBox, QDialog, QDockWidget, QHBox
                                QTabWidget, QVBoxLayout, QWidget)
 
 from core.controller import APP_DIR, STORAGE_DIR, Controller, State
+from core.qt_compat import exec_qt
 from core.command_store import CommandStore
 from core.diagnostics import record_error
 from ui.app_icon import load_app_icon, set_windows_app_id
@@ -418,7 +419,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def open_settings(self):
         dlg = SettingsDialog(self.ctrl, self)
-        dlg.exec()
+        exec_qt(dlg)
         self.prompt.reload()          # rule count / checkboxes reflect what was just edited
         self._sync_log()
 
@@ -498,7 +499,7 @@ class MainWindow(QMainWindow):
         buttons.addWidget(btn_copy)
         buttons.addWidget(btn_close)
         layout.addLayout(buttons)
-        dlg.exec()
+        exec_qt(dlg)
 
     def error_box(self, text: str):
         self.show_output("Error", text)
@@ -685,4 +686,4 @@ def run():
     app.setWindowIcon(load_app_icon())       # also used by every dialog
     win = MainWindow()
     win.show()
-    sys.exit(app.exec())
+    sys.exit(exec_qt(app))

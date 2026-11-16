@@ -49,7 +49,7 @@ except ImportError:
     HAS_QT = False
 
 
-@unittest.skipUnless(HAS_QT, 'Requires a supported Qt 6 binding')
+@unittest.skipUnless(HAS_QT, 'Requires a supported Qt binding')
 class Phase1GuiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

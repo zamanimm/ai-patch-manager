@@ -15,6 +15,7 @@ from qtpy.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QListWidget,
                                QListWidgetItem, QMenu, QMessageBox, QPushButton,
                                QSplitter, QVBoxLayout, QWidget)
 
+from core.qt_compat import exec_qt
 from ui.diff_view import DiffView
 from ui.code_editor import CodeEditor
 from ui.highlight import CodeHighlighter
@@ -100,7 +101,7 @@ class ChangesView(QWidget):
         self.lbl_note.setWordWrap(True)
         self.lbl_note.setTextFormat(Qt.PlainText)
         self.lbl_note.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.lbl_note.setMaximumHeight(self.lbl_note.fontMetrics().lineSpacing() * 7 + 24)
+        self.lbl_note.setMaximumHeight(self.lbl_note.fontMetrics().lineSpacing() * 12 + 48)
         self.lbl_note.setVisible(False)
         layout.addWidget(self.lbl_note)
 
@@ -268,6 +269,8 @@ class ChangesView(QWidget):
                 label += "   ⚠ " + "; ".join(extra)
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, ch.id)
+            if ch.reason:
+                item.setToolTip("Reason: " + ch.reason)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked if ch.selected else Qt.Unchecked)
             if not ch.valid:
@@ -475,7 +478,7 @@ class ChangesView(QWidget):
             lambda: self._on_double_click(item))
         menu.addAction("Choose another editor…").triggered.connect(
             lambda: self._choose_another_editor(item))
-        menu.exec(self.list.viewport().mapToGlobal(point))
+        exec_qt(menu, self.list.viewport().mapToGlobal(point))
 
     def _choose_another_editor(self, item):
         cid = item.data(Qt.UserRole)

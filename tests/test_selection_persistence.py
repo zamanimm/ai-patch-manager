@@ -41,7 +41,7 @@ class WorkspaceSelectionPersistenceTests(unittest.TestCase):
             from qtpy.QtWidgets import QApplication
             from ui.project_view import ProjectView
         except ImportError:
-            self.skipTest("Requires a supported Qt 6 binding")
+            self.skipTest("Requires a supported Qt binding")
 
         app = QApplication.instance() or QApplication([])
 
@@ -125,7 +125,7 @@ class WorkspaceSelectionPersistenceTests(unittest.TestCase):
             from qtpy.QtWidgets import QApplication
             from ui.project_view import ProjectView
         except ImportError:
-            self.skipTest("Requires a supported Qt 6 binding")
+            self.skipTest("Requires a supported Qt binding")
 
         app = QApplication.instance() or QApplication([])
 

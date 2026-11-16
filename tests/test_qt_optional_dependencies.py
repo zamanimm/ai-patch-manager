@@ -28,6 +28,15 @@ class QtBindingSelectionTests(unittest.TestCase):
     def test_explicit_qt_api_overrides_default_preference(self):
         self.assertEqual(choose_qt_api(("pyside6", "pyqt6"), "pyqt6"), "pyqt6")
 
+    def test_automatically_uses_pyqt5_when_it_is_the_only_binding(self):
+        self.assertEqual(choose_qt_api(("pyqt5",)), "pyqt5")
+
+    def test_pyqt6_is_preferred_over_pyqt5_when_both_are_installed(self):
+        self.assertEqual(choose_qt_api(("pyqt5", "pyqt6")), "pyqt6")
+
+    def test_explicit_pyqt5_selection_is_supported(self):
+        self.assertEqual(choose_qt_api(("pyside6", "pyqt6", "pyqt5"), "pyqt5"), "pyqt5")
+
     def test_invalid_or_missing_explicit_binding_is_actionable(self):
         with self.assertRaises(QtBindingError):
             choose_qt_api(("pyside6",), "pyqt6")
@@ -35,8 +44,9 @@ class QtBindingSelectionTests(unittest.TestCase):
             choose_qt_api(("pyside6",), "pyqt5")
 
     def test_installed_bindings_are_detected_without_importing_them(self):
-        specs = {"PySide6": object(), "PyQt6": None}
-        self.assertEqual(installed_qt_bindings(lambda name: specs.get(name)), ("pyside6",))
+        specs = {"PySide6": object(), "PyQt6": None, "PyQt5": object()}
+        self.assertEqual(installed_qt_bindings(lambda name: specs.get(name)),
+                         ("pyside6", "pyqt5"))
 
     def test_loader_uses_pyqt6_when_it_is_the_only_installed_provider(self):
         from types import SimpleNamespace
@@ -56,6 +66,64 @@ class QtBindingSelectionTests(unittest.TestCase):
         self.assertEqual(loaded.api, "pyqt6")
         self.assertEqual(qt_binding.selected_qt_api(), "pyqt6")
         qt_binding.reset_qt_binding_for_tests()
+
+    def test_loader_uses_pyqt5_when_it_is_the_only_installed_provider(self):
+        from types import SimpleNamespace
+        modules = {
+            "qtpy": SimpleNamespace(API_NAME="PyQt5"),
+            "qtpy.QtCore": object(),
+            "qtpy.QtGui": object(),
+            "qtpy.QtWidgets": object(),
+        }
+        qt_binding.reset_qt_binding_for_tests()
+        with patch.dict(os.environ, {}, clear=True):
+            with patch.object(qt_binding.importlib.util, "find_spec", return_value=object()), \
+                 patch.object(qt_binding, "installed_qt_bindings", return_value=("pyqt5",)), \
+                 patch.object(qt_binding, "_purge_qtpy_modules"), \
+                 patch.object(qt_binding.importlib, "import_module", side_effect=lambda name: modules[name]):
+                loaded = qt_binding.load_qt_modules()
+        self.assertEqual(loaded.api, "pyqt5")
+        self.assertEqual(qt_binding.selected_qt_api(), "pyqt5")
+        qt_binding.reset_qt_binding_for_tests()
+
+    def test_pyqt5_without_qtpy_reports_only_qtpy_install_command(self):
+        qt_binding.reset_qt_binding_for_tests()
+        with patch.dict(os.environ, {}, clear=True):
+            with patch.object(qt_binding.importlib.util, "find_spec",
+                              side_effect=lambda name: None if name == "qtpy" else object()), \
+                 patch.object(qt_binding, "installed_qt_bindings", return_value=("pyqt5",)):
+                with self.assertRaises(QtBindingError) as caught:
+                    qt_binding.load_qt_modules()
+        message = str(caught.exception)
+        self.assertIn("PyQt5 is already installed", message)
+        self.assertIn("python -m pip install qtpy", message)
+        self.assertNotIn("requirements-pyside6.txt", message)
+        self.assertNotIn("requirements-pyqt6.txt", message)
+        qt_binding.reset_qt_binding_for_tests()
+
+    def test_pyqt5_requirements_bundle_contains_pyqt5_and_qtpy(self):
+        project = Path(__file__).resolve().parents[1]
+        pyqt5 = (project / "requirements-pyqt5.txt").read_text(encoding="utf-8").lower()
+        self.assertIn("pyqt5", pyqt5)
+        self.assertIn("qtpy", pyqt5)
+
+    def test_exec_qt_supports_qt5_exec_underscore_and_qt6_exec(self):
+        from core.qt_compat import exec_qt
+        class Qt5Object:
+            def exec_(self, value):
+                return ("qt5", value)
+        class Qt6Object:
+            def exec(self, value):
+                return ("qt6", value)
+        self.assertEqual(exec_qt(Qt5Object(), 42), ("qt5", 42))
+        self.assertEqual(exec_qt(Qt6Object(), 42), ("qt6", 42))
+
+    def test_ui_uses_cross_version_exec_helper(self):
+        project = Path(__file__).resolve().parents[1]
+        for path in (project / "ui").glob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            self.assertNotIn(".exec()", source, str(path))
+            self.assertNotIn(".exec(", source, str(path))
 
     def test_existing_pyside6_loads_without_qtpy(self):
         from types import ModuleType
@@ -131,15 +199,20 @@ class QtBindingSelectionTests(unittest.TestCase):
         shared = (project / "requirements.txt").read_text(encoding="utf-8").lower()
         pyside = (project / "requirements-pyside6.txt").read_text(encoding="utf-8").lower()
         pyqt = (project / "requirements-pyqt6.txt").read_text(encoding="utf-8").lower()
+        pyqt5 = (project / "requirements-pyqt5.txt").read_text(encoding="utf-8").lower()
         shared_requirements = "\n".join(
             line for line in shared.splitlines() if line.strip() and not line.lstrip().startswith("#"))
         pyside_requirements = "\n".join(
             line for line in pyside.splitlines() if line.strip() and not line.lstrip().startswith("#"))
         pyqt_requirements = "\n".join(
             line for line in pyqt.splitlines() if line.strip() and not line.lstrip().startswith("#"))
+        pyqt5_requirements = "\n".join(
+            line for line in pyqt5.splitlines() if line.strip() and not line.lstrip().startswith("#"))
         self.assertNotIn("qtpy", shared_requirements)
         self.assertNotIn("qtpy", pyside_requirements)
         self.assertIn("qtpy", pyqt_requirements)
+        self.assertIn("qtpy", pyqt5_requirements)
+        self.assertIn("pyqt5", pyqt5_requirements)
 
     def test_application_sources_do_not_import_a_binding_directly(self):
         project = Path(__file__).resolve().parents[1]
@@ -150,6 +223,7 @@ class QtBindingSelectionTests(unittest.TestCase):
             source = path.read_text(encoding="utf-8")
             self.assertNotIn("from PySide6", source, str(path))
             self.assertNotIn("from PyQt6", source, str(path))
+            self.assertNotIn("from PyQt5", source, str(path))
 
 
 

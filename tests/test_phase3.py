@@ -156,7 +156,7 @@ except ImportError:
     QT_AVAILABLE = False
 
 
-@unittest.skipUnless(QT_AVAILABLE, "Requires a supported Qt 6 binding")
+@unittest.skipUnless(QT_AVAILABLE, "Requires a supported Qt binding")
 class Phase3GuiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

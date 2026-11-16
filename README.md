@@ -2,6 +2,8 @@
 
 **LLM proposes · app validates · you approve.**
 
+Project documentation and historical release notes are organized under [docs/](docs/README.md).
+
 AI Patch Manager lets you change your code with *any* LLM (ChatGPT, Claude, Gemini, a local model…) without
 copy-pasting code back and forth. It builds a prompt from your files, you paste it into the LLM, paste the
 answer back, and the app shows an exact diff of every change. Nothing touches your files until you approve it,
@@ -15,7 +17,7 @@ Project tab ─► Prompt tab ─► (paste into LLM) ─► Response tab ─►
 
 ## Install and run
 
-Install one Qt 6 provider. **PySide6 is the default recommendation**:
+Install one supported Qt provider. **PySide6 is the default recommendation**:
 
 ```powershell
 python -m pip install -r requirements-pyside6.txt
@@ -29,27 +31,33 @@ python -m pip install -r requirements-pyqt6.txt
 python main.py
 ```
 
+If you only have PyQt5, it is also supported through QtPy:
+
+```powershell
+python -m pip install -r requirements-pyqt5.txt
+python main.py
+```
+
 `requirements.txt` contains only shared non-Qt dependencies (`lxml`). If you already have
 PySide6 installed, the app uses it directly: **QtPy is not required**, and you do not need to
 reinstall PySide6 or add another compatibility package. The startup loader provides the small
 `qtpy.*` import namespace internally for the PySide6 path.
 
-If you already have PySide6 or PyQt6 installed, install only the shared dependencies if needed:
+If you already have PySide6, PyQt6, or PyQt5 installed, install only the shared dependencies if needed:
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-PySide6 is preferred when both bindings are installed. PyQt6 uses the real QtPy compatibility
-package (included in `requirements-pyqt6.txt`) because its scoped enum and signal APIs differ.
-To select PyQt6 explicitly for one PowerShell session, use `$env:QT_API="pyqt6"`; use
-`$env:QT_API="pyside6"` to select PySide6. Set this before starting the app. If PyQt6 is selected
-but QtPy is missing, install it with `python -m pip install qtpy` or use the PyQt6 requirements file.
+Provider preference is PySide6, then PyQt6, then PyQt5. PySide6 runs without QtPy; PyQt6 and
+PyQt5 use the QtPy compatibility package included in their respective requirements files.
+Set `QT_API` before launch to choose explicitly: `pyside6`, `pyqt6`, or `pyqt5`. If PyQt5 is
+already installed but QtPy is missing, the startup message asks for only the missing package:
+`python -m pip install qtpy` (it does not ask you to reinstall PyQt5).
 
-PyQt6 and PySide6 have different licensing terms (GPL/commercial versus LGPL/commercial options).
-Review the applicable license obligations before distributing a packaged build, especially for
-closed-source or commercial use.
-
+PyQt5 and PyQt6 are GPL/commercial options; PySide6 offers LGPL/commercial options. Review the
+applicable license obligations before distributing a packaged build, especially for closed-source
+or commercial use.
 **Optional features:**
 - Symbol targeting (Tree-Sitter) is not required. Without it the app runs normally and the Symbol
   checkbox is disabled. Install it only when needed: `python -m pip install -r requirements-symbols.txt`.
@@ -299,7 +307,7 @@ function using Tree-Sitter, including nested blocks.
 
 New snapshots are simple independent byte-exact copies, with collision-resistant names. The app no longer creates or uses `.blobs` for new snapshots. **Keep old `.blobs/` folders and existing backups untouched** if upgrading from Phase 2/3. The latest entries in an existing `history.jsonl` are imported automatically into `history.json`; the journal is archived as `history.jsonl.migrated-...` and is not deleted. Back up `.ai-patch-manager/` before the first launch of this update. Add `.ai-patch-manager/` to your project's `.gitignore`.
 
-See `PHASES_1_TO_3_REEVALUATION.md` for a change-by-change review. The original PHASE1/2/3 optimization notes remain historical and describe the previous implementation.
+See [PHASES_1_TO_3_REEVALUATION.md](docs/changelog/releases/PHASES_1_TO_3_REEVALUATION.md) for a change-by-change review. The original PHASE1/2/3 optimization notes remain historical and describe the previous implementation.
 
 ---
 
@@ -313,7 +321,7 @@ See `PHASES_1_TO_3_REEVALUATION.md` for a change-by-change review. The original 
 | `overlaps with chg-…` | two changes edit the same lines; merge them into one |
 | `inserted code starts at column 0 but the anchor line is indented` (warning) | check indentation, especially in Python |
 | Symbol targeting is disabled | Install `python -m pip install -r requirements-symbols.txt`, restart the app, and run `python check_treesitter.py` |
-| Qt binding cannot be loaded | With existing PySide6, QtPy is not needed. Otherwise install `requirements-pyside6.txt` or `requirements-pyqt6.txt`; if both are present, select with `QT_API` |
+| Qt binding cannot be loaded | Existing PySide6 needs no QtPy. PyQt6/PyQt5 need QtPy; if the binding is already installed, install only `python -m pip install qtpy`. Use the matching requirements file for a fresh environment. |
 | a tab, save, import or project open operation reports a recoverable error | See the Log dock and the per-user `ui_errors.log` traceback for details |
 
 ---
@@ -348,13 +356,13 @@ not exact counts from a specific model tokenizer.
 Search input is debounced (200 ms) to reduce repeated work on long files; Find Next/Previous remains immediate.
 Saved Run commands are stored atomically per workspace. Inactive project tabs refresh when selected, and the How-to-Use Markdown guide loads only on first visit.
 When switching projects, previous project input is cleared from the UI. A command already started in the Run tab continues in its original working directory; its output will not be shown under the new project.
-Error reporting is improved with a bounded per-user `ui_errors.log`. See `PHASE3_OPTIMIZATIONS.md` for test coverage and limitations.
+Error reporting is improved with a bounded per-user `ui_errors.log`. See [PHASE3_OPTIMIZATIONS.md](docs/changelog/releases/PHASE3_OPTIMIZATIONS.md) for test coverage and limitations.
 
 ### Resizable layout preferences
 - Resize columns in **Project** and **History**, resize the **Changes** and **History** split panels, and resize the main window to suit your screen. Sizes are saved in the user's Qt application settings and restored on next launch.
 - Layout preferences are shared across projects; project-specific options remain in `.ai-patch-manager/config.json`.
 
-See `FEATURES_2026-11-01.md` for the full changes and testing notes.
+See [FEATURES_2026-11-01.md](docs/changelog/releases/FEATURES_2026-11-01.md) for the full changes and testing notes.
 
 
 ### Optional project tree in prompts
@@ -369,13 +377,13 @@ A response may include one `<note type="warning">Important action or risk</note>
 (or `type="info"`) **only when the user must know something essential**.
 Warning notes appear in the Changes tab and in a dialog after an explicit Parse;
 info notes appear only in the Changes tab. Both are unverified AI-generated
-text and cannot override validation. See [NOTE_FEATURE.md](NOTE_FEATURE.md).
+text and cannot override validation. See [NOTE_FEATURE.md](docs/reference/NOTE_FEATURE.md).
 
 
 ### Copy/paste recovery: standalone numeric spaces in CDATA
 
 The parser recovers an isolated `&#x20;` / `&#32;` in indentation and even an
-entity-only CDATA line. See `SINGLE_CDATA_SPACE_ENTITY_FIX.md` for behavior
+entity-only CDATA line. See [SINGLE_CDATA_SPACE_ENTITY_FIX.md](docs/changelog/fixes/SINGLE_CDATA_SPACE_ENTITY_FIX.md) for behavior
 and the ambiguity warning about intentionally literal HTML entities.
 
 
@@ -388,4 +396,4 @@ size (files up to 2 MiB / 20,000 lines); otherwise it falls back to a full
 are unchanged, and deletions use a marker. Single-change Undo/Redo no longer
 persists another full `.current` snapshot; History previews reconstruct partial
 states from `.orig` and the recorded active changes. Legacy `.new` and `.current`
-snapshots remain readable. See `HYBRID_ROLLBACK_OPTIMIZATION.md`.
+snapshots remain readable. See [HYBRID_ROLLBACK_OPTIMIZATION.md](docs/reference/HYBRID_ROLLBACK_OPTIMIZATION.md).

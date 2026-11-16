@@ -54,7 +54,7 @@ class ResponseNotesCoreTests(unittest.TestCase):
     def test_no_note_keeps_old_behavior_and_legacy_notes(self):
         xml = ('<response version="1.0"><status>no_changes</status>'
                '<summary>Nothing</summary><notes>Legacy text</notes><changes/></response>')
-        self.assertIsNone(parse_response_with_note(xml)[4])
+        self.assertEqual(parse_response_with_note(xml)[4], ResponseNote('info', 'Legacy text'))
         self.assertEqual(parse_response(xml)[2], 'Legacy text')
 
     def test_escaped_copy_and_cdata_remain_intact(self):
@@ -112,7 +112,7 @@ except ImportError:
     QT_AVAILABLE = False
 
 
-@unittest.skipUnless(QT_AVAILABLE, 'A supported Qt 6 binding is required for GUI tests')
+@unittest.skipUnless(QT_AVAILABLE, 'A supported Qt binding is required for GUI tests')
 class ResponseNotesGuiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

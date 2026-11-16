@@ -638,6 +638,10 @@ class Controller:
             self.state = State.APPLIED
             tx = report.transaction
             assert tx is not None
+            if self.response_notice is not None:
+                tx.response_note = {"type": self.response_notice.type,
+                                    "text": self.response_notice.text}
+            tx.response_notes = self.response_notes
             self.history.record(tx)
             self.log(f"transaction {tx.id} applied "
                      f"({len(report.applied_changes)} changes)")

@@ -2,7 +2,7 @@
 
     python assets/make_icons.py
 
-Needs PySide6 or PyQt6 with QtSvg. Edit icon.svg / icon_small.svg, run this, done.
+Needs PySide6, PyQt6, or PyQt5 with QtSvg. Edit icon.svg / icon_small.svg, run this, done.
 Sizes up to 32 px use the simplified icon_small.svg (readable when tiny);
 larger sizes use the detailed icon.svg.
 """

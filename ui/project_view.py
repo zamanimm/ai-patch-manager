@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 
 from qtpy.QtCore import Qt, QTimer, Signal, QUrl
+from core.qt_compat import exec_qt
 from ui.layout_utils import flexible_label
 from qtpy.QtGui import QDesktopServices
 from qtpy.QtWidgets import (QComboBox, QMenu, QHBoxLayout, QHeaderView, QLabel,
@@ -388,8 +389,9 @@ class ProjectView(QWidget):
             self.main.statusBar().showMessage(f"File not found: {rel}", 4000)
             return
         from ui.file_view_dialog import read_preview_text
-        FileViewDialog(rel, [("Current file", read_preview_text(abs_path))],
-                       disk_path=abs_path, parent=self).exec()
+        dialog = FileViewDialog(rel, [("Current file", read_preview_text(abs_path))],
+                                 disk_path=abs_path, parent=self)
+        exec_qt(dialog)
 
     def _update_file_label(self, item, rel: str):
         """Update file label to show if line ranges are selected."""
@@ -424,7 +426,7 @@ class ProjectView(QWidget):
         dlg = CodeSelectDialog(abs_path, rel,
                                initial=self.ctrl.get_file_ranges(rel),
                                parent=self)
-        if dlg.exec() == CodeSelectDialog.Accepted:
+        if exec_qt(dlg) == CodeSelectDialog.Accepted:
             ranges = dlg.selected_ranges()
             self.ctrl.set_file_ranges(rel, ranges)
             pretty = ", ".join(f"{s}-{e}" for s, e in ranges) or "cleared"

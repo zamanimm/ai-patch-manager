@@ -22,7 +22,7 @@ except ImportError:
     QT_AVAILABLE = False
 
 
-@unittest.skipUnless(QT_AVAILABLE, "Install a Qt 6 binding to run GUI tests")
+@unittest.skipUnless(QT_AVAILABLE, "Install a supported Qt binding to run GUI tests")
 class LayoutTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

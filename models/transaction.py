@@ -44,6 +44,8 @@ class Transaction:
     project: str = ""
     task: str = ""
     summary: str = ""
+    response_note: Dict[str, str] = field(default_factory=dict)  # optional AI notice, untrusted
+    response_notes: str = ""  # legacy <notes> text
     status: str = "applied"          # applied | partially_rolled_back | rolled_back | failed | rollback_failed
     files: List[FileRecord] = field(default_factory=list)
     backup_dir: str = ""             # absolute path of on-disk snapshot
@@ -65,6 +67,8 @@ class Transaction:
             "project": self.project,
             "task": self.task,
             "summary": self.summary,
+            "response_note": dict(self.response_note),
+            "response_notes": self.response_notes,
             "status": self.status,
             "backup_dir": self.backup_dir,
             "changes": sorted({cid for f in self.files for cid in f.change_ids}),
@@ -110,6 +114,9 @@ class Transaction:
         tx = Transaction(
             id=d["id"], timestamp=d["timestamp"], project=d.get("project", ""),
             task=d.get("task", ""), summary=d.get("summary", ""),
+            response_note=(dict(d["response_note"])
+                           if isinstance(d.get("response_note"), dict) else {}),
+            response_notes=str(d.get("response_notes") or ""),
             status=d.get("status", "applied"), backup_dir=d.get("backup_dir", ""),
             change_records=list(d.get("change_records") or []),
             apply_settings=dict(d.get("apply_settings") or {}),

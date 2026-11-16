@@ -3,9 +3,9 @@
 
 LLM proposes; the application validates; the user approves; the application applies.
 
-Qt 6 is provided by PySide6 directly (QtPy is optional) or by PyQt6 through
-QtPy. When both are installed PySide6 is preferred unless QT_API selects
-another provider.
+Qt is provided by PySide6 directly (QtPy is optional), or by PyQt6/PyQt5
+through QtPy. When multiple bindings are installed, PySide6 is preferred,
+then PyQt6, then PyQt5 unless QT_API selects another provider.
 """
 from __future__ import annotations
 

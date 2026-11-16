@@ -13,7 +13,7 @@ try:
     from qtpy.QtCore import Qt
     from qtpy.QtWidgets import QApplication
 except ImportError:  # pragma: no cover - platform dependency
-    raise unittest.SkipTest("A supported Qt 6 binding is required for History UI tests")
+    raise unittest.SkipTest("A supported Qt binding is required for History UI tests")
 
 from core.history_manager import HistoryManager
 from core.transaction import TransactionRunner

@@ -329,6 +329,12 @@ def parse_response_with_note(raw: str) -> Tuple[str, str, str, List[Change], Opt
     if len(root.findall("note")) > 1:
         raise ProtocolError("Only one response-level <note> is allowed.")
     note_el = root.find("note")
+    changes_el = root.find("changes")
+    misplaced = changes_el.findall("note") if changes_el is not None else []
+    if len(misplaced) > 1 or (note_el is not None and misplaced):
+        raise ProtocolError("Only one response-level <note> is allowed.")
+    if note_el is None and misplaced:
+        note_el = misplaced[0]
     note_text = _text_of(note_el) or ""
     note_type = (note_el.get("type", "info") if note_el is not None else "info").lower().strip()
     if note_type not in {"info", "warning"}:
@@ -336,9 +342,33 @@ def parse_response_with_note(raw: str) -> Tuple[str, str, str, List[Change], Opt
     # Keep the UI bounded even for unexpectedly huge model-generated notes.
     note = (ResponseNote(note_type, note_text[:4000] + ("…" if len(note_text) > 4000 else ""))
             if note_text else None)
+    # Older LLM replies may contain <notes> instead of <note>. Treat those as
+    # informational only; never turn legacy free text into an alert dialog.
+    if note is None and notes:
+        note = ResponseNote("info", notes[:4000] + ("…" if len(notes) > 4000 else ""))
 
     changes_el = root.find("changes")
     change_els = changes_el.findall("change") if changes_el is not None else []
+    # Models sometimes put an essential note inside the corresponding change.
+    # Aggregate those into the single response notice so they are not silently
+    # lost and a warning still appears at Parse time. AI text is informational
+    # only; it never overrides validation or Apply safety checks.
+    nested_notes = []
+    for change_el in change_els:
+        for nested in change_el.findall("note"):
+            message = _text_of(nested) or ""
+            if message:
+                typ = str(nested.get("type", "info")).lower().strip()
+                nested_notes.append(("warning" if typ == "warning" else "info",
+                                     str(change_el.get("id") or change_el.get("path") or "change")
+                                     + ": " + message))
+    if nested_notes:
+        combined = ([note.text] if note is not None else []) + [text for _, text in nested_notes]
+        warning = (note is not None and note.type == "warning") or any(
+            typ == "warning" for typ, _ in nested_notes)
+        combined_text = "\n".join(combined)
+        note = ResponseNote("warning" if warning else "info",
+                            combined_text[:4000] + ("…" if len(combined_text) > 4000 else ""))
     if not change_els and status.lower() not in {"no_changes", "error"}:
         raise ProtocolError(
             "Response contains no <change> elements. For a safe no-op reply, "

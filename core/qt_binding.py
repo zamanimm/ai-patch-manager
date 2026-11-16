@@ -1,12 +1,11 @@
-"""Qt 6 binding selection with a zero-extra-dependency PySide6 path.
+"""Qt binding selection with a zero-extra-dependency PySide6 path.
 
-PySide6 is used directly when installed, even if QtPy is absent. This keeps
-existing PySide6 installations working without an additional package. PyQt6
-uses QtPy's compatibility aliases because its scoped-enum API differs from the
-legacy names used by this UI; the PyQt6 install bundle includes QtPy.
+PySide6 is loaded directly and does not require QtPy. PyQt6 and PyQt5 use the
+real QtPy compatibility layer. PyQt5 is supported as a legacy fallback; the
+UI uses QtPy's normalized API and ``exec_qt`` for dialog/event-loop execution.
 
-If both bindings are installed, PySide6 is preferred unless QT_API explicitly
-selects another provider. Selection happens once, before importing UI modules.
+Preference order is PySide6, PyQt6, then PyQt5 unless QT_API explicitly selects
+another installed provider. Selection happens once, before importing UI code.
 """
 from __future__ import annotations
 
@@ -22,14 +21,15 @@ from typing import Optional, Tuple
 _BINDING_MODULES = {
     "pyside6": "PySide6",
     "pyqt6": "PyQt6",
+    "pyqt5": "PyQt5",
 }
-_PREFERENCE = ("pyside6", "pyqt6")
+_PREFERENCE = ("pyside6", "pyqt6", "pyqt5")
 _QT_MODULES = None
 _SELECTED_API: Optional[str] = None
 
 
 class QtBindingError(ImportError):
-    """Raised when no usable Qt 6 binding is available."""
+    """Raised when no usable supported Qt binding is available."""
 
 
 @dataclass(frozen=True)
@@ -45,6 +45,7 @@ def _normalise_api(value: str) -> Optional[str]:
     aliases = {
         "pyside6": "pyside6", "pyside": "pyside6",
         "pyqt6": "pyqt6", "pyqt": "pyqt6",
+        "pyqt5": "pyqt5",
     }
     return aliases.get(value)
 
@@ -57,7 +58,7 @@ def choose_qt_api(available, requested: Optional[str] = None) -> Optional[str]:
         selected = _normalise_api(requested)
         if selected is None:
             raise QtBindingError(
-                f"Unsupported QT_API={requested!r}. Use 'pyside6' or 'pyqt6'.")
+                f"Unsupported QT_API={requested!r}. Use 'pyside6', 'pyqt6', or 'pyqt5'.")
         if selected not in available:
             module = _BINDING_MODULES[selected]
             raise QtBindingError(
@@ -101,23 +102,38 @@ def _find_spec(name: str):
         return None
 
 
-def _install_guidance(api: Optional[str] = None) -> str:
+def _install_guidance(api: Optional[str] = None, *, binding_detected: bool = False) -> str:
+    if api in ("pyqt5", "pyqt6") and binding_detected:
+        label = "PyQt5" if api == "pyqt5" else "PyQt6"
+        return (
+            f"{label} is already installed, but the QtPy compatibility layer is missing.\n\n"
+            "Install only the missing compatibility package:\n\n"
+            "  python -m pip install qtpy\n\n"
+            f"Or install the complete {label} environment with:\n\n"
+            f"  python -m pip install -r requirements-{api}.txt"
+        )
+    if api == "pyqt5":
+        return (
+            "PyQt5 support uses QtPy for cross-version API compatibility.\n\n"
+            "Install the complete PyQt5 option with:\n\n"
+            "  python -m pip install -r requirements-pyqt5.txt"
+        )
     if api == "pyqt6":
         return (
-            "PyQt6 support uses QtPy for Qt 6 enum/API compatibility. Install the "
-            "small compatibility package and the shared dependencies with:\n\n"
-            "  python -m pip install qtpy lxml\n\n"
-            "Or install the complete PyQt6 option with:\n\n"
+            "PyQt6 support uses QtPy for Qt 6 enum/API compatibility.\n\n"
+            "Install the complete PyQt6 option with:\n\n"
             "  python -m pip install -r requirements-pyqt6.txt\n\n"
             "If PySide6 is already installed, you can use it without QtPy by "
             "removing QT_API=pyqt6 or setting QT_API=pyside6."
         )
     return (
-        "No supported Qt 6 binding (PySide6 or PyQt6) was found.\n\n"
+        "No supported Qt binding (PySide6, PyQt6, or PyQt5) was found.\n\n"
         "Install PySide6 (recommended):\n\n"
         "  python -m pip install -r requirements-pyside6.txt\n\n"
         "Or install PyQt6:\n\n"
-        "  python -m pip install -r requirements-pyqt6.txt"
+        "  python -m pip install -r requirements-pyqt6.txt\n\n"
+        "Or install PyQt5:\n\n"
+        "  python -m pip install -r requirements-pyqt5.txt"
     )
 
 
@@ -176,11 +192,11 @@ def _load_via_qtpy(api: str) -> QtModules:
 
 
 def load_qt_modules() -> QtModules:
-    """Load one Qt 6 provider.
+    """Load one Qt provider.
 
-    Existing PySide6 installations work without QtPy. If PySide6 and PyQt6
-    are both installed, PySide6 is preferred. PyQt6 uses QtPy, which is bundled
-    in requirements-pyqt6.txt. QT_API can explicitly select either provider.
+    PySide6 works without QtPy. PyQt6 and PyQt5 require QtPy. If several
+    providers are installed, PySide6 is preferred, then PyQt6, then PyQt5.
+    QT_API can explicitly select an installed provider.
     """
     global _QT_MODULES, _SELECTED_API
     if _QT_MODULES is not None:
@@ -200,7 +216,7 @@ def load_qt_modules() -> QtModules:
                 loaded = _load_via_qtpy(api)
             except Exception:
                 # A broken/mismatched QtPy installation must not block a
-                # working PySide6 installation. PyQt6 still requires QtPy.
+                # working PySide6 installation. PyQt6/PyQt5 still require QtPy.
                 _purge_qtpy_modules()
                 if api != "pyside6":
                     raise
@@ -209,7 +225,9 @@ def load_qt_modules() -> QtModules:
         elif api == "pyside6":
             loaded = _load_native_pyside6()
         else:
-            raise QtBindingError(_install_guidance("pyqt6"))
+            # The binding is already present; only QtPy is missing. Tell the
+            # user to install the compatibility layer alone, not another Qt.
+            raise QtBindingError(_install_guidance(api, binding_detected=True))
     except QtBindingError:
         raise
     except Exception as exc:

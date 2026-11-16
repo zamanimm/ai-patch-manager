@@ -1,4 +1,4 @@
-"""Regression test for unified-diff background consistency (requires a Qt 6 binding)."""
+"""Regression test for unified-diff background consistency (requires a supported Qt binding)."""
 import os
 import unittest
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
@@ -13,7 +13,7 @@ except ImportError:
     QT_AVAILABLE = False
 
 
-@unittest.skipUnless(QT_AVAILABLE, 'A supported Qt 6 binding is required for GUI tests')
+@unittest.skipUnless(QT_AVAILABLE, 'A supported Qt binding is required for GUI tests')
 class DiffColorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
