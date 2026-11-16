@@ -8,6 +8,8 @@ import os
 import subprocess
 from typing import List, Optional
 
+from core.process_runner import no_window_flags
+
 
 class GitManager:
     def __init__(self, project_root: str):
@@ -22,7 +24,8 @@ class GitManager:
         try:
             proc = subprocess.run(
                 ["git", *args], cwd=self.root, capture_output=True, text=True,
-                timeout=20, encoding="utf-8", errors="replace")
+                timeout=20, encoding="utf-8", errors="replace",
+                creationflags=no_window_flags())      # no console window flashing on Windows
             if proc.returncode != 0:
                 return f"git {args[0]} failed:\n{proc.stderr.strip()}"
             return proc.stdout

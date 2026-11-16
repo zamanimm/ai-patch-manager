@@ -12,14 +12,24 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import QSettings, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import (QApplication, QComboBox, QDockWidget, QHBoxLayout,
+from PySide6.QtGui import QAction, QKeySequence, QTextCursor
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDockWidget, QHBoxLayout,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
+                               QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
+                               QPushButton,
                                QTabWidget, QVBoxLayout, QWidget)
 
 from core.controller import APP_DIR, STORAGE_DIR, Controller, State
+from core.command_store import CommandStore
+from core.diagnostics import record_error
+from ui.app_icon import load_app_icon, set_windows_app_id
 from ui.changes_view import ChangesView
+from ui.code_editor import mono_font
+from ui.find_bar import wrap_with_find_bar
+from ui.layout_utils import fit_to_screen
+from ui.text_wrap import apply_wrap
+from ui.text_wrap import wrap_state
+from ui.guide_view import GuideView
 from ui.history_view import HistoryView
 from ui.patch_view import InstructionsView
 from ui.project_view import ProjectView
@@ -47,15 +57,23 @@ _STATE_COLOURS = {
 
 
 class MainWindow(QMainWindow):
-    # emitted from the worker thread; delivered (queued) in the GUI thread
-    _run_finished = Signal(str)
+    # Emitted from the worker thread; delivered (queued) in the GUI thread.
+    _run_finished = Signal(int, str)
+    _run_output = Signal(int, str, str)
 
     def __init__(self):
         super().__init__()
         self.ctrl = Controller()
+        self._settings_save_timer = QTimer(self)
+        self._settings_save_timer.setSingleShot(True)
+        self._settings_save_timer.setInterval(450)
+        self._settings_save_timer.timeout.connect(self.ctrl.save_workspace_config)
+        r0 = self.ctrl.project.root
+        self._shown_root = os.path.normcase(os.path.abspath(r0)) if r0 else ""   # for on_project_opened()
 
         self.setWindowTitle("AI Patch Manager — LLM proposes · app validates · user approves")
-        self.resize(1240, 800)
+        self.setWindowIcon(load_app_icon())
+        fit_to_screen(self, 1240, 800)
 
         tabs = QTabWidget()
         self.project = ProjectView(self.ctrl, self)
@@ -72,6 +90,8 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.history, "History")
         tabs.addTab(self.patch_tab, "Instructions")
         tabs.addTab(self.run_tab, "Run")
+        self.guide = GuideView(self.ctrl, self)
+        tabs.addTab(self.guide, GuideView.TAB_TITLE)      # last tab: how to use the app
         self.tabs = tabs
         tabs.currentChanged.connect(self._tab_changed)
         self.setCentralWidget(tabs)
@@ -94,7 +114,8 @@ class MainWindow(QMainWindow):
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(2000)
-        log_layout.addWidget(self.log_view, 1)
+        apply_wrap(self.log_view, True)
+        log_layout.addWidget(wrap_with_find_bar(self.log_view), 1)
         self.log_dock.setWidget(log_panel)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock)
         self.btn_log_clear.clicked.connect(self.clear_log)
@@ -106,7 +127,12 @@ class MainWindow(QMainWindow):
         act_settings = QAction("Settings...", self); act_settings.triggered.connect(self.open_settings)
         act_reset = QAction("Reset Session", self); act_reset.triggered.connect(self._reset)
         act_quit = QAction("Quit", self); act_quit.triggered.connect(self.close)
-        for a in (act_open, act_settings, act_reset):
+        men.addAction(act_open)
+        self.menu_recent = men.addMenu("Open &Recent")
+        self.menu_recent.setToolTipsVisible(True)
+        self.menu_recent.aboutToShow.connect(
+            lambda: self.populate_recent_menu(self.menu_recent))
+        for a in (act_settings, act_reset):
             men.addAction(a)
         men.addSeparator(); men.addAction(act_quit)
 
@@ -116,15 +142,41 @@ class MainWindow(QMainWindow):
         self.act_toggle_log.setShortcut(QKeySequence("Ctrl+Shift+L"))
         act_clear_log = QAction("Clear Log", self)
         act_clear_log.triggered.connect(self.clear_log)
+        # Wrap Text: one setting for all code / text viewers (also a checkbox inside the file viewer / line picker)
+        self.act_wrap = QAction("Wrap Text", self)
+        self.act_wrap.setCheckable(True)
+        self.act_wrap.setShortcut(QKeySequence("Alt+Z"))
+        self.act_wrap.setToolTip("Wrap long lines in code, diff, prompt and instruction viewers (enabled by default)")
+        self.act_wrap.setChecked(wrap_state().enabled())
+        self.act_wrap.toggled.connect(wrap_state().set_enabled)
+        wrap_state().changed.connect(self.act_wrap.setChecked)      # stays in sync with the dialogs' checkboxes
+        view_menu.addAction(self.act_wrap)
+        view_menu.addSeparator()
         view_menu.addAction(self.act_toggle_log)
         view_menu.addAction(act_clear_log)
 
+        help_menu = self.menuBar().addMenu("&Help")
+        act_guide = QAction("How to Use", self)
+        act_guide.setShortcut(QKeySequence("F1"))
+        act_guide.triggered.connect(lambda: self.tabs.setCurrentWidget(self.guide))
+        help_menu.addAction(act_guide)
+
         # remembered between launches
         self._ui_settings = QSettings("AIPatchManager", "AIPatchManager")
+        self._layout_restoring = True
+        self._layout_save_timer = QTimer(self)
+        self._layout_save_timer.setSingleShot(True)
+        self._layout_save_timer.setInterval(500)
+        self._layout_save_timer.timeout.connect(self._save_layout_preferences)
+        self.project.tree.header().sectionResized.connect(self._schedule_layout_save)
+        self.history.tree.header().sectionResized.connect(self._schedule_layout_save)
+        self.changes.splitter.splitterMoved.connect(self._schedule_layout_save)
+        self.changes.preview_splitter.splitterMoved.connect(self._schedule_layout_save)
+        self.history.splitter.splitterMoved.connect(self._schedule_layout_save)
+        QTimer.singleShot(0, self._restore_layout_preferences)
         self.log_dock.setVisible(
             self._ui_settings.value("log_visible", True, type=bool))
-        self.log_dock.visibilityChanged.connect(
-            lambda vis: self._ui_settings.setValue("log_visible", bool(vis)))
+        self.log_dock.visibilityChanged.connect(self._remember_log_visibility)
 
         self.statusBar().showMessage("Ready. Open a project to begin.")
         self._state_lbl = QLabel("")
@@ -180,11 +232,19 @@ class MainWindow(QMainWindow):
         
         # Output view
         self.out_view = QPlainTextEdit(); self.out_view.setReadOnly(True)
-        layout.addWidget(self.out_view, 1)
+        self.out_view.setFont(mono_font(10))
+        self.out_view.setMaximumBlockCount(12000)
+        apply_wrap(self.out_view, True)
+        self._run_streams_seen = set()
+        self._run_generation = 0  # Ignore results from commands started in an earlier workspace.
+        self._run_output_chars = 0
+        self._run_output_limit = 2 * 1024 * 1024
+        layout.addWidget(wrap_with_find_bar(self.out_view), 1)
         layout.addWidget(self.btn_use_errors)
         
         # Connections
         self._run_finished.connect(self._run_done)
+        self._run_output.connect(self._append_run_output)
         self.btn_run.clicked.connect(self._run_cmd)
         self.btn_run_prev.clicked.connect(self._run_previous_cmd)
         self.btn_use_errors.clicked.connect(self._use_errors)
@@ -204,28 +264,77 @@ class MainWindow(QMainWindow):
             return
         self._remember_last_command(cmd)
         import threading
+        self._run_generation += 1
+        run_id = self._run_generation
+        run_cwd = self.ctrl.project.root or APP_DIR
         self.btn_run.setEnabled(False)
         self.btn_run_prev.setEnabled(False)
-        self.out_view.setPlainText(f"$ {cmd}\n\nRunning...")
+        self._run_streams_seen = set()
+        header = f"$ {cmd}\n\n"
+        self.out_view.setPlainText(header)
+        self._run_output_chars = len(header)
 
         def worker():
             try:
-                result = self.ctrl.run(cmd)
-                text = f"$ {cmd}\n\n{result.combined or '[no output]'}"
+                result = self.ctrl.run(
+                    cmd, cwd=run_cwd,
+                    on_output=lambda stream, chunk: self._run_output.emit(run_id, stream, chunk))
+                summary = f"\n\n[exit code] {result.exit_code}  " \
+                          f"[completed in {result.duration_seconds:.1f}s]"
+                if result.output_truncated:
+                    summary += "\n[returned output buffer was capped; the live view may also trim old output]"
             except Exception as exc:                     # never leave the UI stuck on "Running..."
-                text = f"$ {cmd}\n\n[error] {exc}"
-            # NOTE: QTimer.singleShot from a plain thread never fires (no event
-            # loop there) - a signal is the thread-safe way back to the GUI.
-            self._run_finished.emit(text)
+                summary = f"\n\n[error] {exc}"
+            self._run_finished.emit(run_id, summary)
         threading.Thread(target=worker, daemon=True).start()
 
-    def _run_done(self, text: str):
-        self.out_view.setPlainText(text)
+    def _append_run_output(self, run_id: int, stream: str, chunk: str):
+        if run_id != self._run_generation or not chunk:
+            return
+        prefix = ""
+        if stream not in self._run_streams_seen:
+            self._run_streams_seen.add(stream)
+            prefix = f"[{stream}]\n"
+        cursor = self.out_view.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.insertText(prefix + chunk)
+        self.out_view.setTextCursor(cursor)
+        self._run_output_chars = self.out_view.document().characterCount() - 1
+
+        if self._run_output_chars > self._run_output_limit:
+            # Trim in sizeable batches so a command that emits megabytes does
+            # not make the UI retain an unbounded QTextDocument.
+            trim_count = self._run_output_chars - (self._run_output_limit - 256 * 1024)
+            trim = QTextCursor(self.out_view.document())
+            trim.movePosition(QTextCursor.Start)
+            trim.movePosition(QTextCursor.NextCharacter,
+                              QTextCursor.KeepAnchor, max(0, trim_count))
+            trim.removeSelectedText()
+            trim.movePosition(QTextCursor.Start)
+            trim.insertText("[Earlier command output trimmed to keep the view responsive.]\n")
+            self._run_output_chars = self.out_view.document().characterCount() - 1
+
+    def _run_done(self, run_id: int, text: str):
+        if run_id != self._run_generation:
+            return
+        if not self._run_streams_seen and "[error]" not in text:
+            text += "\n[no output]"
+        cursor = self.out_view.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.insertText(text)
+        self.out_view.setTextCursor(cursor)
         self.btn_run.setEnabled(True)
         self._update_prev_button()
         self._sync_log()
 
-    # ------ "Run Previous Command" ----------------------------------------
+    # ------ "Run Previous Command" / saved workspace commands -------------------
+    def _command_store(self) -> CommandStore:
+        # Resolve per call: switching projects must never write into the old workspace.
+        return CommandStore(self.ctrl.project.root if self.ctrl.project else "")
+
+    def _command_error(self, operation: str, exc: Exception) -> None:
+        self._report_ui_error(operation, exc)
+
     def _run_previous_cmd(self):
         cmd = self._last_command()
         if not cmd:
@@ -235,14 +344,20 @@ class MainWindow(QMainWindow):
         self._run_cmd()
 
     def _last_command(self) -> str:
-        """Last command that was run (this session, else remembered on disk)."""
-        return getattr(self, "_last_cmd", "") or self._read_cmd_store().get("last_command", "")
+        if getattr(self, "_last_cmd", ""):
+            return self._last_cmd
+        try:
+            return self._command_store().last_command()
+        except ValueError as exc:
+            self._command_error("Loading previous command failed", exc)
+            return ""
 
     def _remember_last_command(self, cmd: str) -> None:
         self._last_cmd = cmd
-        data = self._read_cmd_store()
-        data["last_command"] = cmd
-        self._write_cmd_store(data)
+        try:
+            self._command_store().remember(cmd)
+        except (OSError, ValueError) as exc:
+            self._command_error("Saving previous command failed", exc)
 
     def _update_prev_button(self) -> None:
         cmd = self._last_command()
@@ -253,109 +368,56 @@ class MainWindow(QMainWindow):
         text = self.out_view.toPlainText().strip()
         if text:
             self.prompt.txt_errors.setPlainText(text)
+            self.prompt.chk_errors.setChecked(True)
             self.tabs.setCurrentWidget(self.prompt)
             self.statusBar().showMessage("Command output copied into the Errors box.", 5000)
 
-    # ------ Saved commands management (stored in config directory) --------
-    def _get_commands_file(self) -> str:
-        """Get path to saved commands file in config directory."""
-        if not self.ctrl.project or not self.ctrl.project.root:
-            return ""
-        import json
-        workspace_dir = os.path.join(self.ctrl.project.root, ".ai-patch-manager")
-        os.makedirs(workspace_dir, exist_ok=True)
-        return os.path.join(workspace_dir, "saved_commands.json")
-    
-    def _read_cmd_store(self) -> dict:
-        commands_file = self._get_commands_file()
-        if not commands_file or not os.path.exists(commands_file):
-            return {}
-        try:
-            import json
-            with open(commands_file, 'r') as f:
-                data = json.load(f)
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            return {}
-
-    def _write_cmd_store(self, data: dict) -> None:
-        commands_file = self._get_commands_file()
-        if not commands_file:
-            return
-        try:
-            import json
-            os.makedirs(os.path.dirname(commands_file), exist_ok=True)
-            with open(commands_file, 'w') as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            self.statusBar().showMessage(f"Error saving commands: {e}", 4000)
-
-    def _load_commands_from_disk(self) -> list:
-        """Load saved commands from config directory."""
-        return list(self._read_cmd_store().get("commands", []))
-
-    def _save_commands_to_disk(self, commands: list) -> None:
-        """Save commands (keeps the remembered last command)."""
-        data = self._read_cmd_store()
-        data["commands"] = commands
-        self._write_cmd_store(data)
-
     def _load_saved_commands(self):
-        """Load saved commands from config directory and update listbox."""
-        commands = self._load_commands_from_disk()
+        try:
+            commands = self._command_store().commands()
+        except (OSError, ValueError) as exc:
+            self._command_error("Loading saved commands failed", exc)
+            commands = []
         self.cmd_list.clear()
         for cmd in commands:
-            item = QListWidgetItem(cmd)
-            self.cmd_list.addItem(item)
-    
+            self.cmd_list.addItem(QListWidgetItem(cmd))
+
     def _on_cmd_list_clicked(self, item: QListWidgetItem):
-        """When a saved command is clicked, populate the input field."""
         self.cmd_input.setText(item.text())
 
     def _save_command(self):
-        """Save the current command to the saved commands list."""
         cmd = self.cmd_input.text().strip()
         if not cmd:
             self.statusBar().showMessage("Command is empty", 3000)
             return
-        
         try:
-            commands = self._load_commands_from_disk()
-            # Add if not already present
-            if cmd not in commands:
-                commands.insert(0, cmd)  # Add to front (most recent)
-                # Keep only last 20 commands
-                commands = commands[:20]
-                self._save_commands_to_disk(commands)
-                self._load_saved_commands()
-                self.statusBar().showMessage(f"✓ Saved: {cmd}", 3000)
-            else:
-                self.statusBar().showMessage("Command already saved", 3000)
-        except Exception as e:
-            self.statusBar().showMessage(f"Error saving command: {e}", 4000)
+            added = self._command_store().add(cmd)
+        except (OSError, ValueError) as exc:
+            self._command_error("Saving command failed", exc)
+            return
+        if added:
+            self._load_saved_commands()
+        self.statusBar().showMessage(f"✓ Saved: {cmd}" if added else "Command already saved", 3000)
 
     def _delete_command(self):
-        """Delete the selected command from the saved commands list."""
         item = self.cmd_list.currentItem()
         if not item:
             self.statusBar().showMessage("Select a command to delete", 3000)
             return
-        
         try:
-            cmd = item.text()
-            commands = self._load_commands_from_disk()
-            if cmd in commands:
-                commands.remove(cmd)
-                self._save_commands_to_disk(commands)
-                self._load_saved_commands()
-                self.statusBar().showMessage(f"✓ Deleted: {cmd}", 3000)
-        except Exception as e:
-            self.statusBar().showMessage(f"Error deleting command: {e}", 4000)
+            removed = self._command_store().remove(item.text())
+        except (OSError, ValueError) as exc:
+            self._command_error("Deleting command failed", exc)
+            return
+        if removed:
+            self._load_saved_commands()
+            self.statusBar().showMessage(f"✓ Deleted: {item.text()}", 3000)
 
     # ------------------------------------------------------------------
     def open_settings(self):
         dlg = SettingsDialog(self.ctrl, self)
         dlg.exec()
+        self.prompt.reload()          # rule count / checkboxes reflect what was just edited
         self._sync_log()
 
     def _reset(self):
@@ -372,42 +434,72 @@ class MainWindow(QMainWindow):
         self._refresh_state_label()
         self._sync_log()
 
+    def _report_ui_error(self, action: str, exc: Exception) -> None:
+        """Surface recoverable errors, with a traceback available for debugging."""
+        path = record_error(action, exc)
+        self.ctrl.log(f"{action} failed: {type(exc).__name__}: {exc}")
+        if hasattr(self, "log_view"):
+            self._sync_log()
+        message = f"{action} failed: {exc}"
+        if path:
+            message += f"  (details: {path})"
+        self.statusBar().showMessage(message, 8000)
+
+    def _refresh_tab(self, widget) -> None:
+        if widget is self.project:
+            self.project.reload()
+        elif widget is self.prompt:
+            self.prompt.reload()
+        elif widget is self.response_tab:
+            self.response_tab.reload()
+        elif widget is self.changes:
+            self.changes.reload()
+        elif widget is self.history:
+            self.history.reload()
+        elif widget is self.patch_tab:
+            self.patch_tab.reload()
+        elif widget is self.run_tab:
+            self._load_saved_commands()
+            self._update_prev_button()
+
     def _tab_changed(self, index: int):
-        """Keep tab contents in sync with the current workspace state."""
-        w = self.tabs.widget(index)
+        """Refresh on demand, not eagerly for all tabs at project open."""
+        widget = self.tabs.widget(index)
+        if widget is None:
+            return
         try:
-            # Auto-refresh all tabs when switched
-            if w is self.project:
-                self.project.reload()
-            elif w is self.prompt:
-                self.prompt.reload()
-            elif w is self.response_tab:
-                self.response_tab.reload()
-            elif w is self.changes:
-                self.changes.reload()
-            elif w is self.history:
-                self.history.reload()
-            elif w is self.patch_tab:
-                self.patch_tab.reload()
-            elif w is self.run_tab:
-                # Auto-load saved commands when Run tab is switched to
-                self._load_saved_commands()
-                self._update_prev_button()
-        except Exception:
-            pass
+            self._refresh_tab(widget)
+        except Exception as exc:
+            self._report_ui_error(f"Refreshing {type(widget).__name__}", exc)
 
     def update_prompt_stats(self):
         pass  # lightweight hook used by ProjectView
 
     def show_output(self, title: str, text: str):
-        dlg = QMessageBox(self)
+        """Display arbitrary output without long lines expanding a QMessageBox off-screen."""
+        dlg = QDialog(self)
         dlg.setWindowTitle(title)
-        dlg.setTextFormat(Qt.PlainText)
-        dlg.setText(text or "[empty]")
+        fit_to_screen(dlg, 760, 520)
+        layout = QVBoxLayout(dlg)
+        viewer = QPlainTextEdit(dlg)
+        viewer.setReadOnly(True)
+        viewer.setFont(mono_font(10))
+        apply_wrap(viewer, True)
+        viewer.setPlainText(text or "[empty]")
+        layout.addWidget(viewer, 1)
+        buttons = QHBoxLayout()
+        btn_copy = QPushButton("Copy", dlg)
+        btn_close = QPushButton("Close", dlg)
+        btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(viewer.toPlainText()))
+        btn_close.clicked.connect(dlg.accept)
+        buttons.addStretch(1)
+        buttons.addWidget(btn_copy)
+        buttons.addWidget(btn_close)
+        layout.addLayout(buttons)
         dlg.exec()
 
     def error_box(self, text: str):
-        QMessageBox.warning(self, "Error", text)
+        self.show_output("Error", text)
         self._sync_log()
 
     def _refresh_state_label(self):
@@ -425,6 +517,158 @@ class MainWindow(QMainWindow):
         sb.setValue(sb.maximum())                 # always show the newest line
         self._refresh_state_label()
 
+    # ------ recent projects ----------------------------------------------
+    @staticmethod
+    def _short_path(path: str, limit: int = 60) -> str:
+        home = os.path.expanduser("~")
+        shown = ("~" + path[len(home):]) if path.startswith(home) else path
+        if len(shown) > limit:
+            shown = shown[:limit // 3] + " … " + shown[-(limit * 2 // 3):]
+        return shown
+
+    def populate_recent_menu(self, menu: QMenu) -> None:
+        """Fill *menu* with the recent projects (File menu + Project tab button)."""
+        menu.clear()
+        entries = self.ctrl.recent.entries()
+        if not entries:
+            act = menu.addAction("(no recent projects)")
+            act.setEnabled(False)
+            return
+        cur = (os.path.normcase(os.path.abspath(self.ctrl.project.root))
+               if self.ctrl.project.root else "")
+        for i, e in enumerate(entries, 1):
+            name = e["name"].replace("&", "&&")
+            label = f"{name}    —    {self._short_path(e['path']).replace('&', '&&')}"
+            if not e["exists"]:
+                label += "    (not found)"
+            act = menu.addAction(f"&{i}  {label}" if i <= 9 else f"{i}  {label}")
+            act.setToolTip(e["path"])
+            act.setStatusTip(e["path"])
+            if os.path.normcase(os.path.abspath(e["path"])) == cur:
+                act.setCheckable(True)
+                act.setChecked(True)              # the project that is open now
+            act.triggered.connect(lambda _=False, p=e["path"]: self.open_recent(p))
+        menu.addSeparator()
+        act = menu.addAction("Clear Recent Projects")
+        act.triggered.connect(self.clear_recent)
+
+    def open_recent(self, path: str) -> None:
+        if not os.path.isdir(path):
+            ans = QMessageBox.question(
+                self, "Project not found",
+                f"This folder no longer exists:\n\n{path}\n\nRemove it from the recent list?")
+            if ans == QMessageBox.Yes:
+                self.ctrl.recent.remove(path)
+            return
+        self.project._open_path(path)
+
+    def clear_recent(self) -> None:
+        ans = QMessageBox.question(self, "Clear recent projects",
+                                   "Remove all projects from the recent list?\n"
+                                   "(Your projects and their data are not touched.)")
+        if ans == QMessageBox.Yes:
+            self.ctrl.recent.clear()
+            self.statusBar().showMessage("Recent projects cleared.", 4000)
+
+    def on_project_opened(self) -> None:
+        """Reset project-bound UI state, then refresh only the visible tab.
+
+        Inactive tabs will get fresh data through _tab_changed when visited;
+        large history/diff documents are not loaded on every project switch.
+        """
+        root_now = (os.path.normcase(os.path.abspath(self.ctrl.project.root))
+                    if self.ctrl.project.root else "")
+        switched = root_now != getattr(self, "_shown_root", root_now)
+        self._shown_root = root_now
+        if switched:
+            # Never leave the previous project's task, response, or command in
+            # a hidden tab where it could accidentally be used on the new one.
+            self.response_tab.txt_response.clear()
+            self.prompt.txt_task.clear()
+            self.prompt.txt_errors.clear()
+            self.prompt.prompt_preview.clear()
+            self._last_cmd = ""
+            self._run_generation += 1   # queued output from the old project is now stale
+            self.btn_run.setEnabled(True)
+            self.cmd_input.clear()
+            self.out_view.clear()
+            self._load_saved_commands()
+            self._update_prev_button()
+        self.project._render_files(silent=True)
+        current = self.tabs.currentWidget()
+        if current is not self.project:
+            try:
+                self._refresh_tab(current)
+            except Exception as exc:
+                self._report_ui_error(f"Refreshing {type(current).__name__}", exc)
+        root = self.ctrl.project.root
+        base = "AI Patch Manager"
+        self.setWindowTitle(f"{os.path.basename(root.rstrip('/' + os.sep))} — {base}"
+                            if root else f"{base} — LLM proposes · app validates · user approves")
+        self._refresh_state_label()
+        self._sync_log()
+
+    def schedule_workspace_save(self):
+        """Coalesce rapid option toggles into one atomic config write."""
+        self._settings_save_timer.start()
+
+    def _schedule_layout_save(self, *_):
+        if not self._layout_restoring:
+            self._layout_save_timer.start()
+
+    def _restore_layout_preferences(self):
+        """Restore user-resized headers, split panes, and window dimensions."""
+        objects = (
+            ("layout/project_columns", self.project.tree.header()),
+            ("layout/history_columns", self.history.tree.header()),
+            ("layout/changes_splitter", self.changes.splitter),
+            ("layout/changes_diff_editor", self.changes.preview_splitter),
+            ("layout/history_splitter", self.history.splitter),
+        )
+        try:
+            geometry = self._ui_settings.value("layout/window_geometry")
+            if geometry:
+                self.restoreGeometry(geometry)
+            state = self._ui_settings.value("layout/window_state")
+            if state:
+                self.restoreState(state)
+            for key, widget in objects:
+                saved = self._ui_settings.value(key)
+                if saved:
+                    widget.restoreState(saved)
+        except (TypeError, ValueError, RuntimeError) as exc:
+            self._report_ui_error("Restoring UI layout", exc)
+        finally:
+            self._layout_restoring = False
+
+    def _save_layout_preferences(self):
+        """Persist only widget geometry; never overwrite per-project settings."""
+        if self._layout_restoring:
+            return
+        self._ui_settings.setValue("layout/project_columns", self.project.tree.header().saveState())
+        self._ui_settings.setValue("layout/history_columns", self.history.tree.header().saveState())
+        self._ui_settings.setValue("layout/changes_splitter", self.changes.splitter.saveState())
+        self._ui_settings.setValue("layout/changes_diff_editor", self.changes.preview_splitter.saveState())
+        self._ui_settings.setValue("layout/history_splitter", self.history.splitter.saveState())
+        self._ui_settings.setValue("layout/window_geometry", self.saveGeometry())
+        self._ui_settings.setValue("layout/window_state", self.saveState())
+        self._ui_settings.sync()
+
+    def closeEvent(self, event):
+        self._layout_save_timer.stop()
+        self._save_layout_preferences()
+        self.project.flush_pending_save()
+        if self._settings_save_timer.isActive():
+            self._settings_save_timer.stop()
+            self.ctrl.save_workspace_config()
+        super().closeEvent(event)
+
+    def _remember_log_visibility(self, visible: bool):
+        try:
+            self._ui_settings.setValue("log_visible", bool(visible))
+        except RuntimeError:
+            pass                      # window is being destroyed (app shutdown)
+
     def clear_log(self):
         self.ctrl.clear_log()
         self.log_view.clear()
@@ -432,8 +676,11 @@ class MainWindow(QMainWindow):
 
 def run():
     import sys
+    set_windows_app_id()                     # taskbar shows our icon (Windows)
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setApplicationName("AI Patch Manager")
+    app.setWindowIcon(load_app_icon())       # also used by every dialog
     win = MainWindow()
     win.show()
     sys.exit(app.exec())

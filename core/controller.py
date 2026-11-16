@@ -11,6 +11,7 @@ Failure states: INVALID / CONFLICT / FAILED / REJECTED / ROLLED_BACK.
 from __future__ import annotations
 
 import os
+import tempfile
 import time
 from enum import Enum
 from typing import Callable, Dict, List, Optional, Tuple
@@ -19,8 +20,9 @@ from core import file_manager, prompt_builder, scanner
 from core.diff_engine import fill_change_diffs, unified_diff
 from core.git_manager import GitManager
 from core.history_manager import HistoryManager
-from core.parser import ProtocolError, parse_response
+from core.parser import ProtocolError, ResponseNote, parse_response_with_note, strip_code_fences
 from core.process_runner import RunResult, run_command
+from core.recent_projects import RecentProjects
 from core.transaction import ApplyReport, TransactionRunner
 from core.validator import validate_changes
 from models.change import Change
@@ -29,7 +31,6 @@ from models.transaction import Transaction
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_XML = os.path.join(APP_DIR, "config", "app.xml")
-TEMPLATES_DIR = os.path.join(APP_DIR, "templates", "prompts")
 STORAGE_DIR = os.path.join(APP_DIR, "storage")
 
 # Per-workspace data directory (created inside every opened project):
@@ -94,6 +95,7 @@ class Controller:
         self.snapshot_hashes: Dict[str, str] = {}
         self.response_summary: str = ""
         self.response_notes: str = ""
+        self.response_notice: Optional[ResponseNote] = None
         self.changes: List[Change] = []
         self.files: List[str] = []            # scanned project files
         self.selected_files: Dict[str, str] = {}   # path -> mode (full/diff/...)
@@ -106,8 +108,11 @@ class Controller:
         self._workspace_root: str = ""
         self.history = None
         self.git = None
+        self.recent = RecentProjects()
         if self.project.is_open():
             self._attach_workspace(self.project.root, reload_config=True)
+            if not self.recent.contains(self.project.root):      # existing last project
+                self.recent.add(self.project.root)
         else:
             self.history = HistoryManager(os.path.join(STORAGE_DIR, "history"),
                                           os.path.join(STORAGE_DIR, "backups"))
@@ -175,7 +180,6 @@ class Controller:
         data = {
             "app": "ai-patch-manager",
             "version": 1,
-            "templates_dir": TEMPLATES_DIR,
             "project": self.project.to_dict(),
             "selected_files": self.selected_files,
             "file_selections": {p: [list(r) for r in rng]
@@ -183,11 +187,25 @@ class Controller:
             "last_task": getattr(self, "last_task", ""),
             "last_errors": getattr(self, "last_errors", ""),
         }
+        temp_path = None
         try:
-            with open(cfg_path, "w", encoding="utf-8") as fh:
+            os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                    dir=os.path.dirname(cfg_path), prefix=".config-",
+                    suffix=".tmp", delete=False) as fh:
+                temp_path = fh.name
                 json.dump(data, fh, ensure_ascii=False, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(temp_path, cfg_path)
         except OSError as exc:
             self.log(f"could not write workspace config: {exc}")
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
 
     def restore_session_state(self) -> dict:
         """Extra UI state stored in the workspace config (selections etc.)."""
@@ -206,7 +224,23 @@ class Controller:
 
     # -- project ----------------------------------------------------------------
     def open_project(self, root: str, name: Optional[str] = None) -> None:
-        self.project.root = os.path.abspath(root)
+        new_root = os.path.abspath(root)
+        previous = os.path.abspath(self.project.root) if self.project.root else ""
+        if previous and os.path.normcase(previous) != os.path.normcase(new_root):
+            # Switching to ANOTHER project: nothing of the old one may leak over
+            # (pending changes, pasted response, prompt, file / line selections),
+            # otherwise a patch meant for project A could be applied to project B.
+            if self._workspace_root:
+                try:
+                    self.save_workspace_config()          # keep A's own selections
+                except OSError:
+                    pass
+            self.reset_session()
+            self.selected_files = {}
+            self.file_selections = {}
+            self.last_task = ""
+            self.last_errors = ""
+        self.project.root = new_root
         self.git = GitManager(self.project.root)
         # auto-load saved workspace config (name/include/exclude/rules/settings)
         self._attach_workspace(self.project.root, reload_config=True)
@@ -217,6 +251,9 @@ class Controller:
         self.refresh_files()
         self.ensure_baseline_backup()                   # backup BEFORE any patch
         self.state = State.DRAFT
+        self.recent.add(self.project.root)               # shows up in Open Recent
+        if self.recent.last_error:
+            self.log(self.recent.last_error)
         self.log(f"project opened: {self.project.root} "
                  f"(workspace dir: {WORKSPACE_DIR_NAME}/)")
 
@@ -260,7 +297,7 @@ class Controller:
     # -- prompt generation (sections 45-48) --------------------------------------
     def instructions_text(self) -> str:
         """The pure patch-system instructions for the LLM (no files/task)."""
-        include_symbol = getattr(self.project.settings, "include_symbol", True)
+        include_symbol = getattr(self.project.settings, "include_symbol", False)
         return prompt_builder.build_protocol_instruction(include_symbol)
 
     # -- per-file selections (line ranges for selection / context modes) --------
@@ -315,40 +352,39 @@ class Controller:
         pad = int(getattr(self.project.settings, "context_lines", 3) or 3)
         out = []
         for p, m in sorted(self.selected_files.items()):
+            # 'diff' mode = what changed since the workspace was connected.
+            # Binary files have no useful textual diff, so avoid decoding a
+            # potentially large baseline binary just to discard it later.
+            base = None
+            if m == "diff":
+                try:
+                    abs_path = file_manager.safe_join(self.project.root, p)
+                    is_binary = os.path.isfile(abs_path) and file_manager.is_binary_file(abs_path)
+                except Exception:
+                    is_binary = False
+                if not is_binary:
+                    base = self.history.baseline_text(p)
             out.append(prompt_builder.PromptFile(
                 path=p, mode=m,
                 ranges=list(self.file_selections.get(p, [])),
-                context_lines=pad))
+                context_lines=pad, base_content=base,
+                include_binary=getattr(self.project.settings, "include_binary_files", False)))
         return out
-
-    def generate_prompt(self, template_name: str, task: str, errors: str) -> str:
-        if not self.project.is_open():
-            raise RuntimeError("No project is open.")
-        if not self.selected_files:
-            raise RuntimeError("Select at least one file for the prompt.")
-        template = prompt_builder.load_template(TEMPLATES_DIR, template_name)
-        pf_files = self._build_prompt_files()
-        built = prompt_builder.build_prompt(
-            template, self.project.name, self.project.root,
-            pf_files, task, errors, self.project.rules)
-        self.prompt_text = built.text
-        self.snapshot_hashes = built.snapshot_hashes
-        self._last_built = built
-        self.state = State.PROMPT_READY
-        self.log(f"prompt generated ({built.files_count} files, "
-                 f"{built.lines_count} lines, ~{built.est_tokens} tokens)")
-        return built.text
 
     def build_full_xml_prompt(self, task: str, errors: str) -> str:
         """Build the complete XML protocol prompt (<prompt><system>...<files>).
 
-        Works even without a template; includes every selected file with its
-        content (binary files are base64-encoded safely).
+        Includes selected text files and compact binary metadata by default.
+        Base64 binary payloads are included only when explicitly enabled.
 
-        Token saving: when `settings.include_system` is unchecked the whole
-        <system> block is omitted (the LLM already knows the instructions from
-        a previous message / custom instruction); when `include_files` is
-        unchecked the <files> block is omitted as well.
+        Optional blocks (checkboxes in the Prompt tab, remembered per workspace):
+          <system>            settings.include_system     (default OFF)
+          <user_rules>        settings.include_user_rules (default on; also left out when no rules are set)
+          <errors>            settings.include_errors     (default OFF; also left out when the box is empty)
+          <files>             settings.include_files      (default on)
+          <symbol_targeting>  settings.include_symbol     (default OFF)
+          <project_tree>      settings.include_project_tree (default OFF; paths only)
+        Unchecked blocks are omitted entirely to save tokens.
         """
         if not self.project.is_open():
             raise RuntimeError("No project is open.")
@@ -357,50 +393,46 @@ class Controller:
         self.last_task = task or ""
         self.last_errors = errors or ""
         files = self._build_prompt_files()
-        files_block = _render_files(files, self.project.root) if s.include_files \
-            else "<!-- files omitted to save tokens -->"
-        rules_block = "\n        ".join(self.project.rules or [""])
         snaps = {}
-        for pf in files:
-            abs_path = file_manager.safe_join(self.project.root, pf.path)
-            h = file_manager.hash_file_or_text(abs_path)
-            if h:
-                snaps[pf.path] = h
-        include_symbol = getattr(s, "include_symbol", True)
+        files_block = _render_files(files, self.project.root, snapshot_hashes=snaps) if s.include_files \
+            else "<!-- files omitted to save tokens -->"
+        rules = [r.strip() for r in (self.project.rules or []) if r and r.strip()]
+        errors_text = (errors or "").strip()
+        include_symbol = getattr(s, "include_symbol", False)
+        include_rules = getattr(s, "include_user_rules", True) and bool(rules)
+        include_errors = getattr(s, "include_errors", False) and bool(errors_text)
         parts = ["<prompt>"]
         if s.include_system:
-            sys_lines = ["    <system>"]
-            instructions = (
-                prompt_builder.core_system_instructions(include_symbol)
-                + [None]  # placeholder -> multi-line schema instruction
-                + list(prompt_builder.ADDITIONAL_RULES)
-                + [r for _, rules in prompt_builder.RULE_GROUPS for r in rules]
-            )
-            for instr in instructions:
-                if instr is None:
-                    block = ["<instruction>", "XML Schema Format:",
-                             *prompt_builder.protocol_schema(include_symbol).splitlines(),
-                             "</instruction>"]
-                    sys_lines.extend("        " + l for l in block)
-                else:
-                    sys_lines.append(
-                        "        <instruction>%s</instruction>" % instr)
-            sys_lines.append("    </system>")
-            parts += sys_lines
+            parts.append(prompt_builder.render_system_block(include_symbol, "    "))
         else:
             parts.append("    <!-- system instructions omitted to save tokens: "
                          "already known to the LLM -->")
-        parts += [
-            f"    <user_rules>\n        {rules_block}\n    </user_rules>",
-            f"    <task>\n        {(task or '').strip()}\n    </task>",
-            f"    <errors>\n        {(errors.strip() or 'None')}\n    </errors>",
-        ]
+        # If the full system block is omitted, retain its concise output rule.
+        # When <system> is present, the same rule is already included there.
+        if not s.include_system:
+            parts.append(
+                "    <output_contract><![CDATA["
+                + prompt_builder.OUTPUT_CONTRACT_TEXT
+                + "]]></output_contract>")
+        if include_rules:
+            parts.append("    <user_rules>\n        " + "\n        ".join(rules)
+                         + "\n    </user_rules>")
+        parts.append(f"    <task>\n        {(task or '').strip()}\n    </task>")
+        if include_errors:
+            parts.append(f"    <errors>\n        {errors_text}\n    </errors>")
         if s.include_files:
             parts += ["    <files>", files_block, "    </files>"]
         else:
             parts.append("    <!-- files omitted to save tokens: "
                          "previously provided files still in context -->")
-        
+
+        # Optional path-only project tree. This is intentionally independent
+        # of <files>: users can provide structure without sending source code.
+        include_project_tree = getattr(s, "include_project_tree", False)
+        if include_project_tree:
+            tree_xml = prompt_builder.build_project_tree(self.project.root, self.files)
+            parts.extend("    " + line for line in tree_xml.splitlines())
+
         # Symbol targeting (Tree-Sitter) - optional
         if include_symbol:
             parts += [
@@ -416,17 +448,13 @@ class Controller:
         self.snapshot_hashes = snaps
         self.state = State.PROMPT_READY
         self.save_workspace_config()
+        binary_omitted = text.count("[binary file omitted:")
         self.log(f"XML prompt generated ({len(files)} files, system={s.include_system}, "
-                 f"files_block={s.include_files}, symbol={getattr(s, 'include_symbol', True)}, "
-                 f"~{int(len(text)/4)} tokens)")
+                 f"user_rules={include_rules}, errors={include_errors}, "
+                 f"files_block={s.include_files}, binary_omitted={binary_omitted}, "
+                 f"symbol={include_symbol}, project_tree={include_project_tree}, "
+                 f"characters={len(text):,})")
         return text
-
-    def prompt_stats(self) -> Dict[str, int]:
-        b = getattr(self, "_last_built", None)
-        if b is None:
-            return {"files": 0, "lines": 0, "tokens": 0, "errors": 0}
-        return {"files": b.files_count, "lines": b.lines_count,
-                "tokens": b.est_tokens, "errors": b.errors_count}
 
     def mark_sent(self) -> None:
         if self.state == State.PROMPT_READY:
@@ -436,18 +464,46 @@ class Controller:
     # -- response import (sections 49, 23) ---------------------------------------
     def import_response(self, raw_text: str) -> int:
         try:
-            status, summary, notes, changes = parse_response(raw_text)
+            status, summary, notes, changes, notice = parse_response_with_note(raw_text)
         except ProtocolError as exc:
             self.state = State.INVALID
             self.log(f"parse FAILED: {exc}")
             raise
+        _, fences = strip_code_fences(raw_text)
+        if fences:
+            self.log(f"removed {fences} markdown code fence(s) (```) from the response before parsing")
         self.response_raw = raw_text
         self.response_summary = summary
         self.response_notes = notes
+        self.response_notice = notice
         self.changes = changes
         self.state = State.RESPONSE_RECEIVED
         self.log(f"response parsed: status={status}, {len(changes)} changes")
         return len(changes)
+
+    def update_change_content(self, ch: Change, new_content: str, mark_edited: bool = True) -> None:
+        """Edit the PROPOSED code of one change and refresh just its diff.
+
+        Unlike a full re-validation this keeps every change's ticked / rejected
+        state exactly as the user left it. The target (anchor) and the file are
+        never touched - only what would be written."""
+        from core.validator import indent_warnings
+        ch.content = new_content
+        ch.edited = mark_edited
+
+        def read_original(rel: str):
+            abs_path = file_manager.safe_join(self.project.root, rel,
+                                              allow_external=self.project.settings.external_paths)
+            return file_manager.read_text(abs_path) or ""
+
+        if ch.valid and ch.operation not in ("delete", "rename"):
+            fill_change_diffs([ch], read_original)
+            if ch.is_anchored_insert:
+                ch.warnings = indent_warnings(ch, read_original(ch.path))
+        elif not ch.valid and ch.is_region_op:
+            proposed = "\n".join("+ " + l for l in (new_content or "").splitlines())
+            ch.unified_diff = ("# NOT APPLICABLE - target not located in "
+                               f"{ch.path}\n# Proposed content:\n{proposed}\n")
 
     def validate_current_changes(self) -> List[str]:
         """Validation pipeline; returns list of human-readable problems."""
@@ -467,8 +523,7 @@ class Controller:
             if ch.unified_diff:
                 continue
             old = ch.old_text or read_original(ch.path)
-            if ch.operation in ("replace", "insert_before", "insert_after") \
-                    and not ch.valid:
+            if ch.is_region_op and not ch.valid:
                 # Target could not be located: do NOT show a misleading
                 # "whole file replaced" diff - show the proposal only.
                 ch.old_text = ch.new_text = old
@@ -498,6 +553,19 @@ class Controller:
             self.state = State.VALIDATED
         self.log(f"validated: {len(result.ok_changes)} OK, {len(problems)} problems")
         return problems
+
+    def clear_parsed_changes(self) -> None:
+        """Discard parsed proposals/preview without deleting the pasted response.
+
+        Never touch project files, committed history, or the original XML text.
+        The original response can be parsed again from the Response tab.
+        """
+        self.changes.clear()
+        self.response_summary = ""
+        self.response_notes = ""
+        self.response_notice = None
+        self.state = State.RESPONSE_RECEIVED if self.response_raw else State.DRAFT
+        self.log("cleared parsed changes and diff previews (response XML retained)")
 
     # -- preview / selection (sections 24-27) -------------------------------------
     def set_selected(self, change_id: str, selected: bool) -> None:
@@ -566,8 +634,8 @@ class Controller:
         return os.path.join(STORAGE_DIR, "backups")
 
     # -- history / undo (sections 30-33, 60) ----------------------------------------
-    def list_history(self) -> List[Transaction]:
-        return self.history.list_transactions()
+    def list_history(self, limit=None, offset: int = 0) -> List[Transaction]:
+        return self.history.list_transactions(limit=limit, offset=offset)
 
     def undo_transaction(self, tx_id: str) -> Transaction:
         tx = self.history.undo(self.project.root, tx_id)
@@ -612,9 +680,13 @@ class Controller:
         return self.git.status() or ""
 
     # -- run command (section 61) ------------------------------------------------------
-    def run(self, command: str) -> RunResult:
-        result = run_command(command, cwd=self.project.root or APP_DIR)
-        self.log(f"ran `{command}` -> exit {result.exit_code}")
+    def run(self, command: str, on_output=None, *, cwd: Optional[str] = None) -> RunResult:
+        # The UI captures cwd when starting a background command. A project
+        # switch must never redirect an already-queued command to a new folder.
+        result = run_command(command, cwd=cwd or self.project.root or APP_DIR,
+                             on_output=on_output)
+        self.log(f"ran `{command}` -> exit {result.exit_code} "
+                 f"({result.duration_seconds:.1f}s)")
         return result
 
     # -- reset -----------------------------------------------------------------------
@@ -624,5 +696,7 @@ class Controller:
         self.response_raw = ""
         self.snapshot_hashes = {}
         self.response_summary = ""
+        self.response_notes = ""
+        self.response_notice = None
         self.state = State.DRAFT
         self.log("session reset")

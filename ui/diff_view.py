@@ -8,8 +8,11 @@ Fixes vs original:
 """
 from __future__ import annotations
 
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import QApplication, QPlainTextEdit
+
+from ui.highlight import DiffHighlighter
+from ui.text_wrap import follow_wrap
 
 
 def _is_dark_mode() -> bool:
@@ -30,53 +33,23 @@ class DiffView(QPlainTextEdit):
         font = QFont("Consolas" if _os_is_windows() else "Monospace", 11)
         font.setStyleStrategy(QFont.PreferAntialias)
         self.setFont(font)
-        self.setLineWrapMode(QPlainTextEdit.NoWrap)
+        follow_wrap(self)
         self.setPlaceholderText("No diff selected.")
         # Better margins and padding
         self.setContentsMargins(5, 5, 5, 5)
+        # token colours (per file language) layered on top of the +/- colouring
+        self.syntax = DiffHighlighter(self.document())
 
     def show_diff(self, text: str) -> None:
-        self.clear()
-        dark = _is_dark_mode()
-        cursor = self.textCursor()
-        fmt = QTextCharFormat()
-        
-        for line in text.splitlines():
-            if line.startswith("+++") or line.startswith("---"):
-                # File headers - subtle gray
-                fmt.setForeground(QColor("#999999" if dark else "#666666"))
-                fmt.setBackground(QColor("transparent"))
-                fmt.setFontWeight(QFont.Bold)
-            elif line.startswith("@@"):
-                # Line numbers - blue/cyan for visibility
-                fmt.setForeground(QColor("#66d9ff" if dark else "#0066cc"))
-                fmt.setBackground(QColor("transparent"))
-                fmt.setFontWeight(QFont.Bold)
-            elif line.startswith("+"):
-                # Added lines - vivid green
-                if dark:
-                    fmt.setForeground(QColor("#2eff2e"))  # Bright green
-                    fmt.setBackground(QColor("#1a3a1a"))  # Dark green background
-                else:
-                    fmt.setForeground(QColor("#0a7a3d"))  # Dark green text
-                    fmt.setBackground(QColor("#c8f0d8"))  # Light green background
-                fmt.setFontWeight(QFont.Normal)
-            elif line.startswith("-"):
-                # Removed lines - vivid red
-                if dark:
-                    fmt.setForeground(QColor("#ff6b6b"))  # Bright red
-                    fmt.setBackground(QColor("#3d1a1a"))  # Dark red background
-                else:
-                    fmt.setForeground(QColor("#b4232a"))  # Dark red text
-                    fmt.setBackground(QColor("#f8d7da"))  # Light red background
-                fmt.setFontWeight(QFont.Normal)
-            else:
-                # Context lines - neutral
-                fmt.setForeground(QColor("#cccccc" if dark else "#333333"))
-                fmt.setBackground(QColor("transparent"))
-                fmt.setFontWeight(QFont.Normal)
-            
-            cursor.insertText(line + "\n", fmt)
+        # One Qt document update instead of a cursor insertion per line.
+        # The syntax highlighter paints +/- lines while they are visible.
+        self.setUpdatesEnabled(False)
+        try:
+            self.setPlainText(text)
+            self.syntax.refresh(text)
+            self.moveCursor(QTextCursor.Start)
+        finally:
+            self.setUpdatesEnabled(True)
 
 
 def _os_is_windows() -> bool:

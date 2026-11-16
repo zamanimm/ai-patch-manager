@@ -9,6 +9,7 @@ The XML coming back from any LLM is UNTRUSTED input:
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from lxml import etree
@@ -22,6 +23,15 @@ class ProtocolError(Exception):
     """Raised when the response cannot be parsed at all."""
 
 
+@dataclass(frozen=True)
+class ResponseNote:
+    """Optional, untrusted message from the LLM; never a validation result."""
+
+    type: str  # 'warning' or 'info'
+    text: str
+
+
+
 def _safe_parser() -> etree.XMLParser:
     return etree.XMLParser(
         resolve_entities=False,     # block internal & external entities
@@ -33,8 +43,61 @@ def _safe_parser() -> etree.XMLParser:
 
 
 _XML_DECL = re.compile(r"<\?xml[^>]*\?>", re.IGNORECASE)
-_FENCE_OPEN = re.compile(r"^\s*```(?:xml|html)?\s*\n?", re.IGNORECASE)
-_FENCE_CLOSE = re.compile(r"\n?\s*```\s*$")
+# --- markdown code fences (```, ```xml, ```python, ```<anything>) ----------------
+# A fence LINE: backticks + optional info string, nothing else on the line.
+_FENCE_LINE = re.compile(r"^[ \t]*`{3,}[^\n`<]*(?:\n|\Z)", re.MULTILINE)
+# Left-over fence glued to other text: ```<response ...>, </response>```, ```xml <response>
+_FENCE_INLINE = re.compile(r"`{3,}[ \t]*(?:[A-Za-z][\w+#.\-]*[ \t]*(?=<))?")
+# A fence PAIR wrapping the whole content of one CDATA section
+_CD_OPEN = re.compile(r"\A(\s*)`{3,}[^\n`]*\n")
+_CD_CLOSE = re.compile(r"\n[ \t]*`{3,}[ \t]*(\s*)\Z")
+
+
+def _clean_outside(segment: str) -> Tuple[str, int]:
+    """Remove every fence from XML structure / chatter (outside CDATA)."""
+    segment, n1 = _FENCE_LINE.subn("", segment)
+    segment, n2 = _FENCE_INLINE.subn("", segment)
+    return segment, n1 + n2
+
+
+def _unwrap_cdata(content: str) -> Tuple[str, int]:
+    """LLMs sometimes wrap the code INSIDE <![CDATA[ ]]> in ```lang ... ```.
+    Only a fence pair that wraps the whole content is removed, so a Markdown
+    file that legitimately contains code blocks keeps them."""
+    m1, m2 = _CD_OPEN.match(content), _CD_CLOSE.search(content)
+    if m1 and m2 and m1.end() <= m2.start() + 1:
+        return m1.group(1) + content[m1.end():m2.start()] + m2.group(1), 2
+    return content, 0
+
+
+def strip_code_fences(text: str) -> Tuple[str, int]:
+    """Remove accidental markdown code fences from an LLM response.
+
+    Handles ```, ```xml, ```python, ```<anything> - at the start/end, between
+    elements, glued to a tag, or wrapped around the code inside a CDATA
+    section. Returns (clean_text, number_of_fences_removed).
+    """
+    out: List[str] = []
+    removed, pos = 0, 0
+    while True:
+        i = text.find("<![CDATA[", pos)
+        if i == -1:
+            seg, n = _clean_outside(text[pos:])
+            out.append(seg); removed += n
+            break
+        seg, n = _clean_outside(text[pos:i])
+        out.append(seg); removed += n
+        j = text.find("]]>", i + 9)
+        if j == -1:                       # truncated reply: leave the tail untouched
+            out.append(text[i:])
+            break
+        inner, n = _unwrap_cdata(text[i + 9:j])
+        out.append("<![CDATA[" + inner + "]]>")
+        removed += n
+        pos = j + 3
+    return "".join(out), removed
+
+
 _UNQUOTED_ATTR = re.compile(r'(<[\w:-]+(?:\s+[\w:-]+)=(["\'])(?:[^"\']*)\2(?:\s+[\w:-]+=(?!["\'])[^>\s/]+)+[^>]*)')
 
 
@@ -59,10 +122,8 @@ def extract_xml(text: str) -> str:
     truncated), BOM, extra whitespace, and a missing final </response>.
     """
     text = text.lstrip("\ufeff").strip()
-    # strip an opening markdown fence (```xml / ``` ) if present
-    text = _FENCE_OPEN.sub("", text, count=1)
-    # strip a trailing closing fence if present
-    text = _FENCE_CLOSE.sub("", text)
+    # remove every accidental markdown fence (```, ```xml, ```python, ```<anything>)
+    text, _ = strip_code_fences(text)
     text = text.strip()
 
     start = text.find("<response")
@@ -88,28 +149,150 @@ def extract_xml(text: str) -> str:
     return text
 
 
+# Markdown/rich-text copy can escape XML MARKUP and, in some clients,
+# decorate each pasted SOURCE line with a trailing backslash and/or a literal
+# &#x20; indentation token.  Parsing XML alone is not enough: CDATA still
+# contains those presentation artifacts, so exact-match validation fails.
+# Repair only when there is clear evidence of copy formatting.  Do not run
+# generic HTML unescaping over arbitrary code (which can destroy valid code).
+_ESCAPED_XML_TAG = re.compile(
+    r"(?<!\\)\\(?=<(?:/?[A-Za-z_][\w:.-]*(?=[\s/>])|!--|\?xml\b))"
+)
+_ESCAPED_LINE_END = re.compile(r"(?<=>)\\(?=[ \t]*(?:\r?\n|\Z))")
+_CDATA_REGION = re.compile(r"\\?<!\[CDATA\[.*?\]\]>", re.DOTALL)
+_LEADING_SPACE_ENTITY = re.compile(
+    r"(?im)^[ \t]*(?:(?:&#x20;|&#32;)[ \t]*)+"
+)
+_SPACE_ENTITY = re.compile(r"&#(?:x20|32);", re.IGNORECASE)
+_CDATA_LINE_SLASH = re.compile(r"\\(?=\r?\n|\Z)")
+
+
+def _cdata_payloads(text: str) -> list[str]:
+    """Yield only the literal code within CDATA, not its XML delimiters."""
+    return [m.group(0).split('<![CDATA[', 1)[1][:-3]
+            for m in _CDATA_REGION.finditer(text)]
+
+
+def _has_transport_markup(text: str) -> bool:
+    """An escaped XML tag or end-of-tag backslash is a copy-format signal."""
+    outside = _CDATA_REGION.sub("", text)
+    return bool(_ESCAPED_XML_TAG.search(outside)
+                or _ESCAPED_LINE_END.search(outside))
+
+
+def _cdata_copy_signature(text: str) -> bool:
+    """Fallback when outer XML is normal but pasted CDATA remains decorated.
+
+    Require both repeated encoded INDENTATION and repeated end-of-line
+    slashes. A normal code string containing an HTML entity or regex must
+    never trigger this recovery by itself.
+    """
+    for inner in _cdata_payloads(text):
+        encoded = len(_LEADING_SPACE_ENTITY.findall(inner))
+        line_slashes = sum(1 for line in inner.splitlines()
+                           if line.rstrip(' \t').endswith('\\'))
+        if encoded >= 2 and line_slashes >= 2:
+            return True
+    return False
+
+
+def _clean_pasted_cdata(content: str, copy_evidence: bool) -> str:
+    """Restore only leading indentation and transport-created line endings.
+
+    The recovery is deliberately conservative. It does not interpret HTML
+    character references embedded in strings or strip ordinary backslashes
+    within paths and regular expressions. Trailing slashes are removed only
+    when they appear on most source lines (as with Markdown hard breaks).
+    """
+    if not copy_evidence:
+        return content
+
+    source_lines = [ln for ln in content.splitlines() if ln.strip()]
+    slashed_lines = sum(1 for ln in source_lines if ln.rstrip(' \t').endswith('\\'))
+    # One literal &#x20; at the start of an HTML/documentation line may be
+    # intentional. Require a repeated indentation pattern or the repeated
+    # trailing-backslash pattern typical of rich-text copies.
+    entity_indents = len(_LEADING_SPACE_ENTITY.findall(content))
+    if entity_indents >= 2 or slashed_lines >= 2:
+        content = _LEADING_SPACE_ENTITY.sub(
+            lambda m: _SPACE_ENTITY.sub(' ', m.group(0)), content)
+    if len(source_lines) >= 2 and slashed_lines >= 2 and slashed_lines / len(source_lines) >= 0.65:
+        # Only remove the final transport backslash, even for a line that
+        # originally ended in a legitimate backslash or double backslash.
+        content = _CDATA_LINE_SLASH.sub('', content)
+    return content
+
+
+def normalize_escaped_xml_copy(text: str) -> str:
+    """Repair XML copied with Markdown escapes, including pasted CDATA.
+
+    Only run in a response with strong copy-format evidence. For existing
+    valid XML with ordinary code/regex backslashes, this is an identity
+    operation. No global XML or HTML entity-decoding is performed.
+    """
+    copy_evidence = _has_transport_markup(text) or _cdata_copy_signature(text)
+    if not copy_evidence:
+        return text
+
+    def outside(fragment: str) -> str:
+        fragment = _ESCAPED_XML_TAG.sub("", fragment)
+        return _ESCAPED_LINE_END.sub("", fragment)
+
+    result: List[str] = []
+    pos = 0
+    for region in _CDATA_REGION.finditer(text):
+        result.append(outside(text[pos:region.start()]))
+        token = region.group(0)
+        # The backslash before the CDATA opener is markup, not source code.
+        if token.startswith(r"\<![CDATA["):
+            token = token[1:]
+        inner = token[len('<![CDATA['):-3]
+        result.append('<![CDATA[' + _clean_pasted_cdata(inner, copy_evidence) + ']]>')
+        pos = region.end()
+    result.append(outside(text[pos:]))
+    return "".join(result)
+
+
+def _looks_like_escaped_copy(raw: str, xml: str) -> bool:
+    """Check both the raw pasted wrapper and the extracted response XML."""
+    return (_has_transport_markup(raw) or _has_transport_markup(xml)
+            or _cdata_copy_signature(xml))
+
+
 def _text_of(el, strip: bool = True) -> Optional[str]:
     if el is None or el.text is None:
         return None
     return el.text.strip() if strip else el.text
 
 
-def parse_response(raw: str) -> Tuple[str, str, str, List[Change]]:
-    """Parse an LLM response.
+def parse_response_with_note(raw: str) -> Tuple[str, str, str, List[Change], Optional[ResponseNote]]:
+    """Parse XML and return (status, summary, legacy_notes, changes, optional_note).
 
-    Returns (status, summary, notes, changes).
-    Raises ProtocolError on malformed / unsupported documents.
+    The optional response-level <note> is untrusted user-facing information,
+    not a validator warning or an instruction to execute an action.
     """
     xml = extract_xml(raw)
+    if _looks_like_escaped_copy(raw, xml):
+        xml = normalize_escaped_xml_copy(xml)
     try:
         root = etree.fromstring(xml.encode("utf-8"), parser=_safe_parser())
     except etree.XMLSyntaxError as exc:
-        # one recovery attempt: quote unquoted attribute values
-        # (e.g. <response version=1.0>) which some LLMs emit
-        try:
-            fixed = _fix_unquoted_attrs(xml)
-            root = etree.fromstring(fixed.encode("utf-8"), parser=_safe_parser())
-        except Exception:
+        # Try the existing unquoted-attribute recovery first. Only if that
+        # fails, repair backslash-escaped markup introduced when copying from
+        # Markdown/chat. This preserves valid XML (including literal code).
+        candidates = [_fix_unquoted_attrs(xml)]
+        normalized = normalize_escaped_xml_copy(xml)
+        if normalized != xml:
+            candidates.extend((normalized, _fix_unquoted_attrs(normalized)))
+        root = None
+        for candidate in candidates:
+            try:
+                root = etree.fromstring(candidate.encode("utf-8"),
+                                        parser=_safe_parser())
+                break
+            except etree.XMLSyntaxError:
+                continue
+        if root is None:
             raise ProtocolError(f"Malformed XML: {exc}") from exc
 
     if root.tag != "response":
@@ -123,11 +306,26 @@ def parse_response(raw: str) -> Tuple[str, str, str, List[Change]]:
     status = _text_of(root.find("status")) or "unknown"
     summary = _text_of(root.find("summary")) or ""
     notes = _text_of(root.find("notes")) or ""
+    # New response-level note is optional, with at most one per response.
+    # Treat unknown types as ordinary information rather than elevating
+    # AI-generated content to a warning.
+    if len(root.findall("note")) > 1:
+        raise ProtocolError("Only one response-level <note> is allowed.")
+    note_el = root.find("note")
+    note_text = _text_of(note_el) or ""
+    note_type = (note_el.get("type", "info") if note_el is not None else "info").lower().strip()
+    if note_type not in {"info", "warning"}:
+        note_type = "info"
+    # Keep the UI bounded even for unexpectedly huge model-generated notes.
+    note = (ResponseNote(note_type, note_text[:4000] + ("…" if len(note_text) > 4000 else ""))
+            if note_text else None)
 
     changes_el = root.find("changes")
     change_els = changes_el.findall("change") if changes_el is not None else []
-    if not change_els:
-        raise ProtocolError("Response contains no <change> elements.")
+    if not change_els and status.lower() not in {"no_changes", "error"}:
+        raise ProtocolError(
+            "Response contains no <change> elements. For a safe no-op reply, "
+            "use <status>no_changes</status> (or <status>error</status>) in the XML.")
 
     changes: List[Change] = []
     seen_ids = set()
@@ -214,4 +412,10 @@ def parse_response(raw: str) -> Tuple[str, str, str, List[Change]]:
             confidence=confidence,
         ))
 
+    return status, summary, notes, changes, note
+
+
+def parse_response(raw: str) -> Tuple[str, str, str, List[Change]]:
+    """Legacy four-element API, kept for existing integrations and tests."""
+    status, summary, notes, changes, _note = parse_response_with_note(raw)
     return status, summary, notes, changes

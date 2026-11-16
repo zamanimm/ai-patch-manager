@@ -22,6 +22,8 @@ class FileRecord:
     new_hash: str = ""        # sha256 of content after apply
     existed_before: bool = True
     backup_file: str = ""     # filename inside the backup dir holding the original copy
+    new_path: str = ""        # rename only: where the file was moved to (relative to the project root)
+    hash_format: str = "legacy-text"  # raw-sha256 for new records; default preserves old history semantics
 
 
 @dataclass
@@ -60,6 +62,8 @@ class Transaction:
                     "new_hash": f.new_hash,
                     "existed_before": f.existed_before,
                     "backup_file": f.backup_file,
+                    "new_path": f.new_path,
+                    "hash_format": f.hash_format,
                 }
                 for f in self.files
             ],
@@ -87,6 +91,8 @@ class Transaction:
                 old_hash=f.get("old_hash", ""), new_hash=f.get("new_hash", ""),
                 existed_before=f.get("existed_before", True),
                 backup_file=f.get("backup_file", ""),
+                new_path=f.get("new_path", ""),
+                hash_format=f.get("hash_format", "legacy-text"),
             ))
         return tx
 

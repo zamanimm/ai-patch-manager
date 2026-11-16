@@ -5,9 +5,11 @@ validated against the project root before anything touches disk.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import shutil
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -78,30 +80,80 @@ def is_binary_bytes(data: bytes) -> bool:
     return b"\x00" in data[:8192]
 
 
-def read_text_any(abs_path: str) -> Optional[str]:
-    """Read a file for PROMPT inclusion.
+@dataclass(frozen=True)
+class PromptFileSnapshot:
+    """Fresh on-disk content and raw-byte metadata for one selected file."""
+    content: str
+    sha256: str
+    size: int
+    is_binary: bool
 
-    Unlike read_text(), this also supports BINARY files: their raw bytes are
-    base64-encoded and wrapped in an XML-safe marker so the LLM context stays
-    valid UTF-8 text:
 
-        [binary file: base64 follows]
-        <base64 payload...>
+def _file_signature(stat: os.stat_result) -> tuple:
+    """Detect replacement or edits while a selected file is being read."""
+    return (stat.st_dev, stat.st_ino, stat.st_size,
+            stat.st_mtime_ns, stat.st_ctime_ns)
 
-    Returns None when the file does not exist / cannot be read.
+
+def read_prompt_snapshot(abs_path: str,
+                         include_binary: bool = False) -> PromptFileSnapshot:
+    """Always read the selected file directly from disk; no content cache.
+
+    Use the same open handle for hashing and contents. Detect concurrent edits
+    and retry once to avoid including inconsistent source. Large binary files
+    are hashed in chunks and omitted unless the user enables base64 inclusion.
+    All I/O failures propagate to the prompt builder for an actionable error.
     """
-    try:
+    for attempt in range(2):
         with open(abs_path, "rb") as fh:
-            data = fh.read()
-    except (FileNotFoundError, IsADirectoryError):
-        return None
+            before = os.fstat(fh.fileno())
+            first = fh.read(8192)
+            binary = is_binary_bytes(first)
+            digest = hashlib.sha256()
+            digest.update(first)
+            size_read = len(first)
+            chunks = None if (binary and not include_binary) else [first]
+
+            while True:
+                block = fh.read(1024 * 1024)
+                if not block:
+                    break
+                size_read += len(block)
+                digest.update(block)
+                if chunks is not None:
+                    chunks.append(block)
+
+            after = os.fstat(fh.fileno())
+
+        # Recheck the path, too: the file may have been replaced or renamed
+        # while its original handle was still readable.
+        current = os.stat(abs_path)
+        if (_file_signature(before) == _file_signature(after)
+                == _file_signature(current)
+                and size_read == after.st_size):
+            break
+        if attempt == 1:
+            raise OSError(f"Selected file changed while being read: {abs_path}")
+
+    sha256 = digest.hexdigest()
+    size = size_read
+    if binary:
+        if include_binary:
+            payload = base64.b64encode(b"".join(chunks or [])).decode("ascii")
+            content = "[binary file: base64 follows]\n" + payload
+        else:
+            content = f"[binary file omitted: {size:,} bytes; sha256={sha256}]"
+    else:
+        content = b"".join(chunks or []).decode("utf-8", errors="replace")
+    return PromptFileSnapshot(content, sha256, size, binary)
+
+
+def read_text_any(abs_path: str, include_binary: bool = False) -> Optional[str]:
+    """Read current file content for previews/prompts without caching."""
+    try:
+        return read_prompt_snapshot(abs_path, include_binary).content
     except OSError:
         return None
-    if is_binary_bytes(data):
-        import base64
-        payload = base64.b64encode(data).decode("ascii")
-        return ("[binary file: base64 follows]\n" + payload)
-    return data.decode("utf-8", errors="replace")
 
 
 def write_text(abs_path: str, content: str) -> None:

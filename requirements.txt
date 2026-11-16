@@ -9,3 +9,5 @@ tree-sitter-typescript
 tree-sitter-java
 tree-sitter-c
 tree-sitter-cpp
+# Syntax highlighting in the code viewers (optional: without it the viewers show plain text)
+pygments>=2.14

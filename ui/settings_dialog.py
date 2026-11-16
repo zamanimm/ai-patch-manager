@@ -61,7 +61,7 @@ class SettingsDialog(QDialog):
                          "tab.</span>"))
         layout.addWidget(prompt_box)
 
-        layout.addWidget(QLabel("User-defined Rules (added to every prompt - section 44):"))
+        layout.addWidget(QLabel("User-defined Rules - one per line (sent as <user_rules>; tick / untick it in the Prompt tab):"))
         self.txt_rules = QPlainTextEdit()
         self.txt_rules.setPlaceholderText(
             "- Do not change public APIs.\n- Do not modify test files.\n"

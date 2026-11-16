@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>AI Patch Manager (small sizes)</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#4c6ef5"/>
+      <stop offset="1" stop-color="#1b2a7a"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="496" height="496" rx="108" fill="url(#bg)"/>
+  <!-- simplified: bold diff bands only (readable at 16-32 px) -->
+  <rect x="72" y="136" width="288" height="320" rx="34" fill="#ffffff"/>
+  <rect x="72" y="196" width="288" height="112" fill="#ff5d5d"/>
+  <rect x="72" y="316" width="288" height="112" fill="#27b865"/>
+  <rect x="112" y="240" width="72" height="26" rx="13" fill="#ffffff"/>
+  <rect x="112" y="359" width="72" height="26" rx="13" fill="#ffffff"/>
+  <rect x="135" y="336" width="26" height="72" rx="13" fill="#ffffff"/>
+  <rect x="214" y="238" width="104" height="30" rx="15" fill="#ffffff" opacity="0.7"/>
+  <rect x="214" y="357" width="104" height="30" rx="15" fill="#ffffff" opacity="0.7"/>
+  <path d="M402 40 Q412 126 496 136 Q412 146 402 232 Q392 146 308 136 Q392 126 402 40 Z" fill="#ffd43b"/>
+</svg>

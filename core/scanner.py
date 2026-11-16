@@ -153,7 +153,7 @@ def scan_project(root: str, include: List[str], exclude: List[str],
             rel_dir = ""
         dirnames[:] = [
             d for d in dirnames
-            if not d.startswith(".") and not _dir_excluded(
+            if not d.startswith(".") and d not in ALWAYS_SKIP_DIRS and not _dir_excluded(
                 f"{rel_dir}/{d}" if rel_dir else d, exc)
         ]
         for fname in filenames:

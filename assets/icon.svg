@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>AI Patch Manager</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#4c6ef5"/>
+      <stop offset="1" stop-color="#1b2a7a"/>
+    </linearGradient>
+  </defs>
+  <!-- app tile -->
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#bg)"/>
+  <!-- source file with a diff: one line removed (red), one added (green) -->
+  <rect x="104" y="146" width="240" height="310" rx="26" fill="#000" opacity="0.22"/>
+  <rect x="96" y="136" width="240" height="310" rx="26" fill="#ffffff"/>
+  <rect x="124" y="166" width="130" height="22" rx="11" fill="#c9d3ea"/>
+  <rect x="96" y="212" width="240" height="62" fill="#ff6b6b"/>
+  <rect x="122" y="237" width="32" height="12" rx="6" fill="#ffffff"/>
+  <rect x="176" y="234" width="124" height="18" rx="9" fill="#ffffff" opacity="0.65"/>
+  <rect x="96" y="282" width="240" height="62" fill="#2fbf71"/>
+  <rect x="122" y="307" width="32" height="12" rx="6" fill="#ffffff"/>
+  <rect x="132" y="297" width="12" height="32" rx="6" fill="#ffffff"/>
+  <rect x="176" y="304" width="96" height="18" rx="9" fill="#ffffff" opacity="0.65"/>
+  <rect x="124" y="368" width="160" height="22" rx="11" fill="#c9d3ea"/>
+  <rect x="124" y="404" width="100" height="22" rx="11" fill="#c9d3ea"/>
+  <!-- AI sparkle (the LLM proposes the patch) -->
+  <path d="M386 32 Q394 102 464 110 Q394 118 386 188 Q378 118 308 110 Q378 102 386 32 Z" fill="#ffd43b"/>
+  <path d="M452 196 Q455 219 478 222 Q455 225 452 248 Q449 225 426 222 Q449 219 452 196 Z" fill="#ffe27a"/>
+  <!-- validated / approved badge (the app validates, you approve) -->
+  <circle cx="340" cy="404" r="58" fill="#20c997" stroke="#ffffff" stroke-width="10"/>
+  <path d="M314 404 L334 424 L370 382" fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

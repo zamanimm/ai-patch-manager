@@ -15,7 +15,7 @@ from typing import Callable, List, Optional
 from core import file_manager
 from core.backup_manager import BackupManager
 from core.patch_engine import PatchError, merge_file_changes, plan_file_operations
-from models.change import Change, sha256_text
+from models.change import Change
 from models.transaction import FileRecord, Transaction
 
 
@@ -46,6 +46,11 @@ class TransactionRunner:
     def dry_run(self, changes: List[Change]) -> List[str]:
         """Check every selected change can be executed WITHOUT touching files."""
         problems: List[str] = []
+        for c in changes:
+            if c.selected and c.operation == "rename" and c.new_path:
+                dest = self._join(c.new_path)
+                if os.path.exists(dest):           # may have appeared since validation
+                    problems.append(f"{c.id}: rename target already exists: {c.new_path}")
         groups = plan_file_operations([c for c in changes if c.selected])
         for rel, chs in groups.items():
             original = file_manager.read_text(self._join(rel))
@@ -53,8 +58,7 @@ class TransactionRunner:
             if original is None and "create" not in ops:
                 problems.append(f"{rel}: file does not exist")
                 continue
-            region_ops = [c for c in chs if c.operation in
-                          ("replace", "insert_before", "insert_after")]
+            region_ops = [c for c in chs if c.is_region_op]
             try:
                 if region_ops:
                     merge_file_changes(original or "", region_ops, self.settings)
@@ -91,12 +95,16 @@ class TransactionRunner:
             for rel in groups:
                 content = file_manager.read_text(self._join(rel))
                 originals[rel] = content
+                old_hash = file_manager.hash_file_or_text(self._join(rel)) if content is not None else ""
+                if content is not None and not old_hash:
+                    raise OSError(f"could not hash original file before backup: {rel}")
                 rec = FileRecord(
                     path=rel,
                     operation=",".join(sorted({c.operation for c in groups[rel]})),
                     change_ids=[c.id for c in groups[rel]],
-                    old_hash=sha256_text(content) if content is not None else "",
+                    old_hash=old_hash,
                     existed_before=content is not None,
+                    hash_format="raw-sha256",
                 )
                 if content is not None and self.settings.backup_before_apply:
                     rec.backup_file = self.backup_mgr.store_original(
@@ -115,15 +123,17 @@ class TransactionRunner:
                 new_content = self._compute_new(chs, original)
                 if any(c.operation == "delete" for c in chs):
                     if os.path.isfile(abs_path):
-                        os.remove(abs_path)
+                        file_manager.delete_file(abs_path)
                 else:
                     file_manager.write_text(abs_path, new_content)
                 rec = next(r for r in tx.files if r.path == rel)
                 rec.new_hash = "" if any(c.operation == "delete" for c in chs) \
-                    else sha256_text(new_content)
+                    else file_manager.hash_file_or_text(abs_path)
+                if not any(c.operation == "delete" for c in chs) and not rec.new_hash:
+                    raise OSError(f"could not hash updated file after write: {rel}")
                 # capture the post-apply state so REDO can restore it exactly
                 if rec.new_hash and self.settings.backup_before_apply:
-                    self._store_new_copy(snapshot_dir, rel, abs_path)
+                    self.backup_mgr.store_new(snapshot_dir, rel, abs_path)
                 for c in chs:
                     c.status = "applied"
                     report.applied_changes.append(c.id)
@@ -134,6 +144,9 @@ class TransactionRunner:
                 if ch.operation == "rename" and ch.new_path:
                     file_manager.rename_file(self._join(ch.path),
                                              self._join(ch.new_path))
+                    rec = next((r for r in tx.files if r.path == ch.path), None)
+                    if rec is not None:
+                        rec.new_path = ch.new_path      # undo / redo / rollback need to know where it went
                     self.log(f"[{tx.id}] {ch.id} renamed {ch.path} -> {ch.new_path}")
         except (PatchError, OSError) as exc:
             self.log(f"[{tx.id}] FAILED: {exc} - rolling back")
@@ -153,33 +166,25 @@ class TransactionRunner:
 
     # -- content computation ---------------------------------------------------
     def _compute_new(self, chs: List[Change], original: str) -> str:
-        region_ops = [c for c in chs if c.operation in
-                      ("replace", "insert_before", "insert_after")]
+        region_ops = [c for c in chs if c.is_region_op]
         text = merge_file_changes(original, region_ops, self.settings) if region_ops else original
         for c in chs:
             if c.operation == "create":
                 text = (c.content or "") + "\n"
-            elif c.operation == "append":
+            elif c.operation == "append" and not c.has_anchor:      # end of file
                 sep = "" if text.endswith("\n") or text == "" else "\n"
                 text = text + sep + (c.content or "") + "\n"
-            elif c.operation == "prepend":
+            elif c.operation == "prepend" and not c.has_anchor:     # start of file
                 text = (c.content or "") + "\n" + text
         return text
 
     def _rollback(self, snapshot_dir: str, tx: Transaction) -> None:
         for rec in reversed(tx.files):
             try:
+                if rec.new_path:                        # a rename already happened: move it back first
+                    file_manager.delete_file(self._join(rec.new_path))
                 self.backup_mgr.restore(snapshot_dir, self.project_root,
                                         rec.path, rec.existed_before)
                 self.log(f"[{tx.id}] rollback restored {rec.path}")
             except OSError as exc:  # pragma: no cover
                 self.log(f"[{tx.id}] ROLLBACK ERROR {rec.path}: {exc}")
-
-    def _store_new_copy(self, snapshot_dir: str, rel: str, abs_path: str) -> None:
-        """Byte-exact copy of the post-apply file (enables redo)."""
-        try:
-            dst = os.path.join(snapshot_dir,
-                               BackupManager.backup_name(rel) + ".new")
-            file_manager.copy_file(abs_path, dst)
-        except OSError as exc:
-            self.log(f"could not store redo copy for {rel}: {exc}")

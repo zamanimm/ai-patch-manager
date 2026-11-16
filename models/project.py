@@ -28,9 +28,13 @@ class ProjectSettings:
     external_paths: bool = False
     auto_apply: bool = False
     # prompt token saving: skip repeating blocks in generated prompts
-    include_system: bool = True     # False => omit <system> from next prompt
+    include_system: bool = False    # False (default) => omit <system> from the prompt (paste the Instructions into your LLM once)
     include_files: bool = True      # False => omit <files> from next prompt
-    include_symbol: bool = True     # False => no Tree-Sitter <symbol> targeting in prompt / instructions
+    include_user_rules: bool = True  # False => omit <user_rules> (it is also left out when no rules are set)
+    include_errors: bool = False    # False (default) => omit <errors> from next prompt
+    include_symbol: bool = False    # False (default) => no <symbol_targeting> / <symbol> instructions
+    include_binary_files: bool = False  # Base64 binary payloads are opt-in to avoid wasting context
+    include_project_tree: bool = False  # Include paths/folders only; never file contents
     context_lines: int = 3          # padding lines around picked ranges in 'context' mode
 
 
@@ -105,7 +109,9 @@ def save_project_xml(path: str, project: Project) -> None:
     for key in ("exact_match", "hash_validation", "context_match", "fuzzy_match",
                 "require_preview", "require_confirmation", "backup_before_apply",
                 "conflict_detection", "external_paths", "auto_apply",
-                "include_system", "include_files", "include_symbol"):
+                "include_system", "include_files", "include_symbol",
+                "include_user_rules", "include_errors", "include_binary_files",
+                "include_project_tree"):
         etree.SubElement(set_el, key).text = "true" if getattr(s, key) else "false"
     etree.SubElement(set_el, "fuzzy_threshold").text = str(s.fuzzy_threshold)
 
@@ -145,7 +151,9 @@ def load_project_xml(path: str) -> Optional[Project]:
         for key in ("exact_match", "hash_validation", "context_match", "fuzzy_match",
                     "require_preview", "require_confirmation", "backup_before_apply",
                     "conflict_detection", "external_paths", "auto_apply",
-                    "include_system", "include_files", "include_symbol"):
+                    "include_system", "include_files", "include_symbol",
+                "include_user_rules", "include_errors", "include_binary_files",
+                "include_project_tree"):
             el = set_el.find(key)
             if el is not None and el.text:
                 setattr(s, key, flags.get(el.text.strip().lower(), getattr(s, key)))

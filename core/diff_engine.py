@@ -23,10 +23,10 @@ def compute_modified(original: str, change: Change) -> str:
         raise ValueError("delete removes the whole file; no content result")
     if op == "rename":
         return original
-    if op == "append":
+    if op == "append" and not change.has_anchor:           # end of file
         sep = "" if original.endswith("\n") or original == "" else "\n"
         return original + sep + (change.content or "") + "\n"
-    if op == "prepend":
+    if op == "prepend" and not change.has_anchor:          # start of file
         return (change.content or "") + "\n" + original
 
     # region operations need a located range produced by the validator
@@ -39,9 +39,9 @@ def compute_modified(original: str, change: Change) -> str:
 
     if op == "replace":
         return "".join(lines[:start]) + block + "".join(lines[end:])
-    if op == "insert_before":
+    if op == "prepend":                                    # anchored: before the target
         return "".join(lines[:start]) + block + "".join(lines[start:])
-    if op == "insert_after":
+    if op == "append":                                     # anchored: after the target
         return "".join(lines[:end]) + block + "".join(lines[end:])
     raise ValueError(f"unknown operation {op}")
 

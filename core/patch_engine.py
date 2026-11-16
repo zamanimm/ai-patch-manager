@@ -15,7 +15,8 @@ from __future__ import annotations
 import re
 from typing import Dict, List
 
-from core.validator import locate
+from core.validator import (find_region_conflicts, locate,
+                            locate_failure_message, region_span)
 from models.change import Change
 
 
@@ -52,39 +53,42 @@ def merge_file_changes(original: str, changes: List[Change], settings) -> str:
     for ch in regex_ops:
         text = _apply_regex_change(text, ch)
 
-    # -- Pass 2: line-level region ops (replace / insert_before / insert_after) --
+    # -- Pass 2: line-level region ops (replace / anchored append + prepend) --
+    # (an anchored append / prepend may use ANY target mode, incl. regex; only a
+    # regex *replace* is the replace-all pass above)
     region_ops: List[Change] = []
     non_regex_region = [ch for ch in changes
-                        if ch.operation in ("replace", "insert_before", "insert_after")
-                        and not ch.target.regex]
+                        if ch.is_anchored_insert
+                        or (ch.operation == "replace" and not ch.target.regex)]
     for ch in non_regex_region:
         # re-locate against the (possibly regex-modified) text
         span, kind = locate(ch, text, settings)
         if span is None:
-            raise PatchError(f"{ch.id}: target not found in {ch.path}")
+            raise PatchError(f"{ch.id}: {locate_failure_message(ch, kind)}"
+                             if kind else f"{ch.id}: target not found in {ch.path}")
         ch.located_range = span
         ch.match_kind = kind
         region_ops.append(ch)
 
-    # overlap detection
-    ordered = sorted(region_ops, key=lambda c: c.located_range)
-    for a, b in zip(ordered, ordered[1:]):
-        if b.located_range[0] < a.located_range[1]:
-            raise PatchError(
-                f"overlapping targets between {a.id} and {b.id} in {changes[0].path}")
+    # overlap detection (inserts are zero-width, so before+after the same
+    # line, or replace + insert next to it, are fine)
+    for a_, b_ in find_region_conflicts(region_ops):
+        raise PatchError(f"overlapping targets between {a_.id} and {b_.id} "
+                         f"in {changes[0].path}")
 
-    # splice from the end of the file upwards (use `text` which may have been
-    # modified by regex passes above)
+    # splice from the end of the file upwards; equal positions keep the order
+    # the LLM listed them in
+    order = {id(ch): i for i, ch in enumerate(region_ops)}
     lines = text.splitlines(keepends=True)
-    for ch in sorted(region_ops, key=lambda c: c.located_range, reverse=True):
+    for ch in sorted(region_ops, key=lambda c: (region_span(c), order[id(c)]), reverse=True):
         start, end = ch.located_range
         body = ch.content or ""
         block = body if body.endswith("\n") or body == "" else body + "\n"
         if ch.operation == "replace":
             lines[start:end] = [block]
-        elif ch.operation == "insert_before":
+        elif ch.operation == "prepend":          # anchored: directly above the target
             lines[start:start] = [block]
-        elif ch.operation == "insert_after":
+        elif ch.operation == "append":           # anchored: directly below the target
             lines[end:end] = [block]
     return "".join(lines)
 

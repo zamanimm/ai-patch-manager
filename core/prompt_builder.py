@@ -1,22 +1,18 @@
 """Prompt builder (sections 7-10, 42-48).
 
-Generates a standard, LLM-independent prompt from:
-  - an XML template with {{PLACEHOLDER}} slots
-  - selected files in full / diff mode
-  - the user task and captured errors
-  - user-defined rules
-Adds a context preview summary (files / lines / estimated tokens).
+Provides the pieces of the standard, LLM-independent XML prompt:
+  - the <system> instructions + response schema (symbol targeting optional)
+  - rendering of the selected files (full / diff / selection / context modes)
+The prompt itself is assembled in Controller.build_full_xml_prompt().
 """
 from __future__ import annotations
 
 import difflib
-import os
-import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from xml.sax.saxutils import escape as xml_escape
+from typing import List, Optional, Tuple
 
 from core import file_manager
-from models.change import sha256_text
 
 # Schema documentation: Four target modes (in priority order)
 # 0. <symbol>            Tree-Sitter structural targeting (50+ languages, no ambiguity)
@@ -37,6 +33,8 @@ from models.change import sha256_text
 _SCHEMA_HEAD = r"""<response version="1.0">
     <status>success</status>
     <summary>Brief description of changes</summary>
+    <!-- Optional: only if user MUST know an important issue/action; omit otherwise. -->
+    <!-- <note type="warning">Critical user-visible consequence or required action</note> -->
     <changes>
         <!-- Target mode A: exact match -->
         <change id="chg-001" path="relative/file/path.ext" operation="replace">
@@ -65,10 +63,26 @@ _SCHEMA_HEAD = r"""<response version="1.0">
             <replacement><![CDATA[def new_handler(\1):]]></replacement>
             <reason>Rename old_handler function to new_handler</reason>
         </change>
+        <!-- prepend / append WITH a <target>: add new code BEFORE / AFTER a specific line
+             (the anchor is the line's text - no line numbers needed) -->
+        <change id="chg-004" path="app.py" operation="prepend">
+            <target>
+                <match><![CDATA[def my_func():]]></match>
+            </target>
+            <replacement><![CDATA[# helper added above my_func]]></replacement>
+            <reason>Add code directly above the line "def my_func():"</reason>
+        </change>
+        <change id="chg-005" path="app.py" operation="append">
+            <target>
+                <match><![CDATA[import os]]></match>
+            </target>
+            <replacement><![CDATA[import sys]]></replacement>
+            <reason>Add code directly below the line "import os"</reason>
+        </change>
 """
 
 _SCHEMA_SYMBOL_EXAMPLE = r"""        <!-- Example 3: Symbol (Tree-Sitter) — PREFERRED for semantic targeting -->
-        <change id="chg-004" path="controller.m" operation="replace">
+        <change id="chg-006" path="controller.m" operation="replace">
             <target>
                 <symbol>
                     <type>function</type>
@@ -93,6 +107,53 @@ def protocol_schema(include_symbol: bool = True) -> str:
 
 PROTOCOL_SCHEMA = protocol_schema(True)
 
+
+def build_project_tree(root: str, relative_paths) -> str:
+    """Render a compact XML directory tree containing paths only.
+
+    The input paths are the project's currently scanned files, so include /
+    exclude rules are respected. No file is opened and no file content is
+    included. Unsafe or non-relative paths are ignored defensively.
+    """
+    import os
+    from pathlib import PurePosixPath
+    from xml.sax.saxutils import quoteattr
+
+    project_name = os.path.basename(os.path.normpath(root)) or root or "project"
+    tree = {"dirs": {}, "files": []}
+    safe_paths = []
+    for raw in relative_paths or []:
+        value = str(raw).replace("\\", "/").strip()
+        if (not value or value.startswith("/")
+                or (len(value) >= 2 and value[1] == ":")):
+            continue
+        path = PurePosixPath(value)
+        if not path.parts or any(part in ("", ".", "..") for part in path.parts):
+            continue
+        safe_paths.append(path.parts)
+
+    safe_paths = sorted(set(safe_paths), key=lambda p: tuple(x.casefold() for x in p))
+    for parts in safe_paths:
+        node = tree
+        for part in parts[:-1]:
+            node = node["dirs"].setdefault(part, {"dirs": {}, "files": []})
+        node["files"].append(parts[-1])
+
+    lines = [f"<project_tree root={quoteattr(project_name)} file_count={quoteattr(str(len(safe_paths)))}>"]
+
+    def render(node, depth):
+        pad = "  " * depth
+        for dirname in sorted(node["dirs"], key=str.casefold):
+            lines.append(f"{pad}<directory name={quoteattr(dirname)}>")
+            render(node["dirs"][dirname], depth + 1)
+            lines.append(f"{pad}</directory>")
+        for filename in sorted(node["files"], key=str.casefold):
+            lines.append(f"{pad}<file name={quoteattr(filename)} />")
+
+    render(tree, 1)
+    lines.append("</project_tree>")
+    return "\n".join(lines)
+
 # Extra rule groups appended to the system instructions (§ minimal change,
 # hallucination prevention, language awareness, strict XML output).
 MINIMAL_CHANGE_RULES = [
@@ -112,9 +173,23 @@ LANGUAGE_RULES = [
 ]
 
 STRICT_XML_RULES = [
-    "No markdown, explanations, or text outside the XML response.",
-    "Avoid nested CDATA issues in the schema example.",
+    "Do not repeat the supplied source files or restate the user request outside the XML changes.",
 ]
+
+OUTPUT_CONTRACT_TEXT = (
+    "For code or file-editing requests, return exactly one XML response document "
+    "conforming to the supplied response schema. Do not include questions, "
+    "conversational answers, explanations, acknowledgments, plans, Markdown "
+    "fences, or any text outside the XML. If a safe edit is impossible from "
+    "the supplied context, do not guess or ask follow-up questions; return "
+    "status no_changes with a concise summary and an empty changes element. "
+    "Include at most one optional response-level <note type=\"warning\"> "
+    "or <note type=\"info\"> only if there is an essential risk, "
+    "dependency, manual step, or consequence that the user MUST know. "
+    "Otherwise omit <note> entirely; never use it for ordinary summaries, "
+    "explanations, or routine advice. Use warning only for genuine caution; "
+    "notes are model-supplied and unverified."
+)
 
 # Core instructions (what goes inside <system>) - single source of truth.
 # Symbol (Tree-Sitter) targeting is OPTIONAL: pass include_symbol=False to get
@@ -137,12 +212,11 @@ def core_system_instructions(include_symbol: bool = True) -> List[str]:
             "Prefer exact match for complex logic; regex only for simple patterns.")
     items = [
         "You are a precise code modification assistant.",
-        ("You MUST return ONLY a structured XML response following the specified "
-         "schema below."),
+        OUTPUT_CONTRACT_TEXT,
         ("Wrap all code snippets inside CDATA sections to avoid XML parsing "
-         "errors."),
-        ("Supported operations: create, delete, replace, insert_before, "
-         "insert_after, append, prepend, rename."),
+         "errors. Keep source indentation as actual spaces/tabs (not &#x20;), "
+         "and never append Markdown copy-format backslashes to code lines."),
+        ("Supported operations: create, delete, replace, append, prepend, rename."),
         ("TARGET STRATEGY: You have already seen the source code. Your job is to "
          "generate a PRECISE pattern that uniquely identifies the region to modify "
          "in THIS specific file — not a universal grammar. The application will "
@@ -167,6 +241,15 @@ def core_system_instructions(include_symbol: bool = True) -> List[str]:
          "`@decorator_old` → `@decorator_new`. "
          "DO NOT use regex for function bodies, control flow, or nested logic "
          "— use <match> mode instead."),
+        ("APPEND / PREPEND: WITHOUT a <target> they add the code at the very END (append) or "
+         "START (prepend) of the file. WITH a <target> they add it next to a specific line: "
+         "append = directly BELOW the anchor, prepend = directly ABOVE it. The anchor is a <match> "
+         "holding that line (or block) copied EXACTLY from the source - no line numbers needed - "
+         "and it is kept. The <replacement> is inserted as new whole lines. To add code both before "
+         "AND after the same line, send one prepend and one append with the same <match>. The anchor "
+         "must occur exactly ONCE in the file (otherwise it is rejected as ambiguous): add the "
+         "neighbouring line to make it unique. Keep the original indentation in <replacement> "
+         "(e.g. code inside a class stays indented)."),
         ("SAFETY: The application validates strictly. If your regex matches 0 times "
          "or 2+ times, the change is rejected. If the file changed after you saw it, "
          "the hash will not match and the change is rejected. Therefore: be precise, "
@@ -182,7 +265,6 @@ ADDITIONAL_RULES = [
     'Paths are relative to the project root. Never use "..".',
     "Every change needs a unique id like chg-001, chg-002, ...",
     ("rename requires <new_path>. Optional: <hash>, <notes>, <confidence>."),
-    "Output ONLY the XML document. No markdown fences, no commentary.",
 ]
 
 # Ordered rule groups rendered after the schema example: (title, rules)
@@ -190,7 +272,7 @@ RULE_GROUPS = [
     ("Minimal change rules", MINIMAL_CHANGE_RULES),
     ("Prevent hallucination", HALLUCINATION_RULES),
     ("Language awareness", LANGUAGE_RULES),
-    ("Ensure strict XML output", STRICT_XML_RULES),
+    ("Avoid prompt repetition", STRICT_XML_RULES),
 ]
 
 
@@ -213,24 +295,38 @@ Additional rules:
          "\n".join("- %s" % r for r in ADDITIONAL_RULES),
          _rule_groups_text())
 
-# Full protocol instruction block embedded in generated prompts ({{PROTOCOL}}).
-# include_symbol=False drops every mention of Tree-Sitter <symbol> targeting.
-def build_protocol_instruction(include_symbol: bool = True) -> str:
-    lines = ["<prompt>", "    <system>"]
-    for instr in (
-        [f"<instruction>{t}</instruction>" for t in core_system_instructions(include_symbol)]
-        + ["<instruction>", "XML Schema Format:", *protocol_schema(include_symbol).splitlines(), "</instruction>"]
-        + [f"<instruction>{t}</instruction>" for t in ADDITIONAL_RULES]
-        + [f"<instruction>{t}</instruction>" for t in
-           [r for _, rules in RULE_GROUPS for r in rules]]
-    ):
-        lines.extend("    " + l for l in instr.splitlines())
-    lines.append("    </system>")
-    lines.append("</prompt>")
+# Full protocol instruction block (shown in the Instructions tab).
+# Instructions are CDATA text; the response schema is real nested XML so it
+# remains readable instead of being displayed as a wall of &lt; and &gt;.
+def _cdata(text: str) -> str:
+    """Wrap text in CDATA, safely splitting the one forbidden terminator."""
+    return "<![CDATA[" + str(text).replace("]]>", "]]]]><![CDATA[>") + "]]>"
+
+
+def render_system_block(include_symbol: bool = True, indent: str = "    ") -> str:
+    """Render one clean, well-formed system block with a structured schema."""
+    pad = indent
+    inner = pad + "    "
+    instructions = (
+        core_system_instructions(include_symbol)
+        + list(ADDITIONAL_RULES)
+        + [rule for _, rules in RULE_GROUPS for rule in rules]
+    )
+    lines = [f"{pad}<system>"]
+    instruction_text = "\n\n".join(instructions)
+    lines.append(f"{inner}<instructions>{_cdata(instruction_text)}</instructions>")
+    lines.append(f"{inner}<response_schema>")
+    lines.extend(f"{inner}    {line}" for line in protocol_schema(include_symbol).splitlines())
+    lines.append(f"{inner}</response_schema>")
+    lines.append(f"{pad}</system>")
     return "\n".join(lines)
 
 
-PROTOCOL_INSTRUCTION = build_protocol_instruction(True)
+def build_protocol_instruction(include_symbol: bool = True) -> str:
+    """Return the reusable protocol as valid XML, without escaped schema text."""
+    return "\n".join(("<prompt>", render_system_block(include_symbol, "    "), "</prompt>"))
+
+
 
 
 @dataclass
@@ -241,6 +337,7 @@ class PromptFile:
     base_content: Optional[str] = None     # reference version for diff mode
     ranges: List[Tuple[int, int]] = field(default_factory=list)  # 1-based inclusive line ranges (selection / context modes)
     context_lines: int = 3                 # how many surrounding lines to include in 'context' mode
+    include_binary: bool = False           # base64 binary content only on explicit opt-in
 
 
 def _apply_ranges(text: str, ranges: List[Tuple[int, int]]) -> str:
@@ -287,25 +384,52 @@ def _expand_context(ranges: List[Tuple[int, int]], pad: int, total: int) -> List
     return [(max(1, s - pad), min(total, e + pad)) for s, e in ranges]
 
 
-@dataclass
-class BuiltPrompt:
-    text: str
-    files_count: int = 0
-    lines_count: int = 0
-    est_tokens: int = 0
-    errors_count: int = 0
-    task: str = ""
-    snapshot_hashes: Dict[str, str] = field(default_factory=dict)
+class PromptFileUnavailableError(RuntimeError):
+    """A selected project file could not be safely read for the prompt."""
 
 
-def _render_files(files: List[PromptFile], project_root: str) -> str:
+def _render_files(files: List[PromptFile], project_root: str,
+                  snapshot_hashes: Optional[dict] = None) -> str:
     out: List[str] = []
     for pf in files:
-        abs_path = file_manager.safe_join(project_root, pf.path)
-        current = file_manager.read_text_any(abs_path)
-        if current is None:
-            out.append(f'<file path="{pf.path}" mode="{pf.mode}">'
-                       f'<![CDATA[[file does not exist yet]]]></file>')
+        try:
+            abs_path = file_manager.safe_join(project_root, pf.path)
+        except file_manager.PathSafetyError as exc:
+            raise PromptFileUnavailableError(
+                f"Selected file '{pf.path}' is outside the project root or has an unsafe path: {exc}"
+            ) from exc
+
+        # Read a fresh snapshot every time. Missing or inaccessible selected
+        # files must raise an error, never become "not yet created" placeholders.
+        try:
+            snapshot = file_manager.read_prompt_snapshot(
+                abs_path, include_binary=pf.include_binary)
+        except FileNotFoundError as exc:
+            raise PromptFileUnavailableError(
+                f"Selected file '{pf.path}' is not present under project root "
+                f"'{project_root}'. The file may have been moved or deleted; "
+                "rescan the Project tab and select it again."
+            ) from exc
+        except PermissionError as exc:
+            raise PromptFileUnavailableError(
+                f"Selected file '{pf.path}' exists at '{abs_path}' but access was denied. "
+                "Check its permissions or whether another application is locking it."
+            ) from exc
+        except (OSError, MemoryError, TypeError, ValueError) as exc:
+            detail = getattr(exc, "strerror", None) or str(exc) or type(exc).__name__
+            raise PromptFileUnavailableError(
+                f"Could not read selected file '{pf.path}' at '{abs_path}': {detail}. "
+                "No source content was added to the prompt."
+            ) from exc
+
+        current = snapshot.content
+        if snapshot_hashes is not None:
+            snapshot_hashes[pf.path] = snapshot.sha256
+        if snapshot.is_binary:
+            mode = "binary-base64" if pf.include_binary else "binary"
+            out.append(f'<file path="{pf.path}" mode="{mode}" '
+                       f'size="{snapshot.size}" sha256="{snapshot.sha256}">\n'
+                       f'<![CDATA[\n{current}\n]]>\n</file>')
             continue
         if pf.mode == "diff":
             base = pf.base_content if pf.base_content is not None else ""
@@ -327,7 +451,7 @@ def _render_files(files: List[PromptFile], project_root: str) -> str:
             if not body:
                 body = current  # no range picked yet -> include full file
                 out.append(f'<file path="{pf.path}" mode="full" '
-                           f'sha256="{sha256_text(current)}">\n'
+                           f'sha256="{snapshot.sha256}">\n'
                            f'<![CDATA[\n{body}\n]]>\n</file>')
                 continue
             rngs = ", ".join(f"{s}-{e}" for s, e in sorted(pf.ranges)) or "manual"
@@ -345,68 +469,6 @@ def _render_files(files: List[PromptFile], project_root: str) -> str:
                        f'<![CDATA[\n{body}\n]]>\n</file>')
         else:  # full (default)
             out.append(f'<file path="{pf.path}" mode="full" '
-                       f'sha256="{sha256_text(current)}">\n'
+                       f'sha256="{snapshot.sha256}">\n'
                        f'<![CDATA[\n{current}\n]]>\n</file>')
     return "\n\n".join(out)
-
-
-def build_prompt(template_text: str, project_name: str, project_root: str,
-                 files: List[PromptFile], task: str,
-                 errors: str = "", rules: Optional[List[str]] = None) -> BuiltPrompt:
-    """Fill a {{PLACEHOLDER}} template. Falls back to a sane default layout."""
-    files_block = _render_files(files, project_root)
-    rules_block = "\n".join(f"- {r}" for r in (rules or []))
-
-    text = template_text
-    replacements = {
-        "{{PROTOCOL}}": PROTOCOL_INSTRUCTION,
-        "{{PROJECT_NAME}}": project_name,
-        "{{PROJECT_ROOT}}": project_root,
-        "{{TASK}}": task.strip(),
-        "{{ERRORS}}": errors.strip() or "[none provided]",
-        "{{FILES}}": files_block,
-        "{{RULES}}": rules_block or "[none]",
-    }
-    for key, value in replacements.items():
-        text = text.replace(key, value)
-
-    total_lines = sum(text.count("\n") for _ in [0])  # single pass below
-    lines = text.count("\n") + 1
-    built = BuiltPrompt(
-        text=text,
-        files_count=len(files),
-        lines_count=lines,
-        est_tokens=int(len(text) / 4),               # crude ~4 chars/token estimate
-        errors_count=errors.count("\n") + 1 if errors.strip() else 0,
-        task=task,
-        snapshot_hashes=_snapshot(files, project_root),
-    )
-    return built
-
-
-def _snapshot(files: List[PromptFile], project_root: str) -> Dict[str, str]:
-    """Hashes of the file state the LLM saw - basis for conflict detection (§22).
-
-    Uses RAW-BYTE hashes so binary files are covered exactly as they are on
-    disk (matches file_manager.hash_file_or_text used by the validator).
-    """
-    snaps: Dict[str, str] = {}
-    for pf in files:
-        abs_path = file_manager.safe_join(project_root, pf.path)
-        h = file_manager.hash_file_or_text(abs_path)
-        if h:
-            snaps[pf.path] = h
-    return snaps
-
-
-def load_template(templates_dir: str, name: str) -> str:
-    path = os.path.join(templates_dir, name)
-    if not os.path.isfile(path):
-        raise FileNotFoundError(f"prompt template not found: {name}")
-    return file_manager.read_text(path) or ""
-
-
-def list_templates(templates_dir: str) -> List[str]:
-    if not os.path.isdir(templates_dir):
-        return []
-    return sorted(f for f in os.listdir(templates_dir) if f.endswith(".xml"))

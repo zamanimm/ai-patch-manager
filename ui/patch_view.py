@@ -10,6 +10,10 @@ import time
 
 from PySide6.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QMessageBox,
                                QPlainTextEdit, QPushButton, QVBoxLayout, QWidget)
+from ui.code_editor import mono_font
+from ui.find_bar import wrap_with_find_bar
+from ui.highlight import CodeHighlighter
+from ui.text_wrap import follow_wrap
 
 
 class InstructionsView(QWidget):
@@ -19,9 +23,10 @@ class InstructionsView(QWidget):
         self.main = main_window
 
         layout = QVBoxLayout(self)
-        hint = QLabel("Patch protocol instructions ONLY (the <system> part). "
-                      "Paste this into your LLM as a custom instruction — "
-                      "it is already embedded in every generated prompt.")
+        hint = QLabel("Complete XML patch protocol (the <system> part). "
+                      "Copy this into your LLM once as a reusable instruction, "
+                      "or enable '<system> instructions' in the Prompt tab to "
+                      "include it with each generated prompt.")
         hint.setStyleSheet("color:#666;")
         layout.addWidget(hint)
 
@@ -45,8 +50,10 @@ class InstructionsView(QWidget):
 
         self.view = QPlainTextEdit()
         self.view.setReadOnly(True)
-        self.view.setLineWrapMode(QPlainTextEdit.NoWrap)
-        layout.addWidget(self.view, 1)
+        follow_wrap(self.view)
+        self.view.setFont(mono_font(10))
+        self.syntax = CodeHighlighter(self.view.document(), language="xml")
+        layout.addWidget(wrap_with_find_bar(self.view), 1)      # search only: fixed text
 
         self.btn_copy.clicked.connect(self._copy)
         self.btn_save.clicked.connect(self._save)
@@ -57,10 +64,7 @@ class InstructionsView(QWidget):
         if getattr(self, "_loading", False):
             return
         self.ctrl.project.settings.include_symbol = checked
-        try:
-            self.ctrl.save_workspace_config()
-        except Exception:
-            pass
+        self.main.schedule_workspace_save()
         self.reload()
         # keep the Prompt tab's checkbox in sync
         prompt_tab = getattr(self.main, "prompt", None)
@@ -70,7 +74,7 @@ class InstructionsView(QWidget):
     def reload(self):
         self._loading = True
         self.chk_symbol.setChecked(
-            getattr(self.ctrl.project.settings, "include_symbol", True))
+            getattr(self.ctrl.project.settings, "include_symbol", False))
         self._loading = False
         text = self.ctrl.instructions_text()
         self.view.setPlainText(text)
@@ -95,6 +99,11 @@ class InstructionsView(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, "Save instructions", "",
                                               "XML files (*.xml);;Text files (*.txt);;All files (*)")
         if path:
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(text)
+            try:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+            except OSError as exc:
+                self.main._report_ui_error("Saving instructions", exc)
+                self.main.show_output("Save failed", str(exc))
+                return
             self.lbl_info.setText(f"Saved to {path}")
