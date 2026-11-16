@@ -4,8 +4,8 @@ from __future__ import annotations
 import os
 import sys
 
-from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QFileDialog, QMessageBox
+from qtpy.QtCore import QSettings
+from qtpy.QtWidgets import QFileDialog, QMessageBox
 
 from core.open_with import OpenWith
 

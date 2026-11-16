@@ -15,7 +15,7 @@ from typing import List, Optional, Tuple
 from core import file_manager
 
 # Schema documentation: Four target modes (in priority order)
-# 0. <symbol>            Tree-Sitter structural targeting (50+ languages, no ambiguity)
+# 0. <symbol>            Tree-Sitter structural targeting (available grammars only)
 #                        <symbol><type>function</type><name>foo</name></symbol>
 #
 # 1. <match>             Exact text matching (safest for small unique blocks)
@@ -81,28 +81,126 @@ _SCHEMA_HEAD = r"""<response version="1.0">
         </change>
 """
 
-_SCHEMA_SYMBOL_EXAMPLE = r"""        <!-- Example 3: Symbol (Tree-Sitter) — PREFERRED for semantic targeting -->
-        <change id="chg-006" path="controller.m" operation="replace">
+_SYMBOL_SCHEMA_EXAMPLES = {
+    "python": r"""        <!-- Example 3: Symbol (Tree-Sitter) — Python grammar -->
+        <change id="chg-006" path="example.py" operation="replace">
             <target>
                 <symbol>
                     <type>function</type>
-                    <name>calculateControl</name>
+                    <name>calculate_total</name>
                 </symbol>
             </target>
-            <replacement><![CDATA[function y = newController(x)
-    y = x * 2;
-end]]></replacement>
-            <reason>Replace entire calculateControl function with optimized version</reason>
+            <replacement><![CDATA[def calculate_total(items):
+    return sum(items)]]></replacement>
+            <reason>Replace the complete calculate_total function.</reason>
         </change>
-"""
+""",
+    "javascript": r"""        <!-- Example 3: Symbol (Tree-Sitter) — JavaScript grammar -->
+        <change id="chg-006" path="example.js" operation="replace">
+            <target>
+                <symbol>
+                    <type>function</type>
+                    <name>calculateTotal</name>
+                </symbol>
+            </target>
+            <replacement><![CDATA[function calculateTotal(items) {
+    return items.reduce((total, item) => total + item, 0);
+}]]></replacement>
+            <reason>Replace the complete calculateTotal function.</reason>
+        </change>
+""",
+    "typescript": r"""        <!-- Example 3: Symbol (Tree-Sitter) — TypeScript grammar -->
+        <change id="chg-006" path="example.ts" operation="replace">
+            <target>
+                <symbol>
+                    <type>function</type>
+                    <name>calculateTotal</name>
+                </symbol>
+            </target>
+            <replacement><![CDATA[function calculateTotal(items: number[]): number {
+    return items.reduce((total, item) => total + item, 0);
+}]]></replacement>
+            <reason>Replace the complete calculateTotal function.</reason>
+        </change>
+""",
+    "tsx": r"""        <!-- Example 3: Symbol (Tree-Sitter) — TSX grammar -->
+        <change id="chg-006" path="example.tsx" operation="replace">
+            <target>
+                <symbol>
+                    <type>function</type>
+                    <name>Widget</name>
+                </symbol>
+            </target>
+            <replacement><![CDATA[function Widget() {
+    return <div>Updated</div>;
+}]]></replacement>
+            <reason>Replace the complete Widget function.</reason>
+        </change>
+""",
+    "java": r"""        <!-- Example 3: Symbol (Tree-Sitter) — Java grammar -->
+        <change id="chg-006" path="Example.java" operation="replace">
+            <target>
+                <symbol>
+                    <type>method</type>
+                    <name>calculateTotal</name>
+                    <class>Calculator</class>
+                </symbol>
+            </target>
+            <replacement><![CDATA[    int calculateTotal(int[] values) {
+        int total = 0;
+        for (int value : values) total += value;
+        return total;
+    }]]></replacement>
+            <reason>Replace the calculateTotal method in Calculator.</reason>
+        </change>
+""",
+    "c": r"""        <!-- Example 3: Symbol (Tree-Sitter) — C grammar -->
+        <change id="chg-006" path="example.c" operation="replace">
+            <target>
+                <symbol>
+                    <type>function</type>
+                    <name>calculate_total</name>
+                </symbol>
+            </target>
+            <replacement><![CDATA[int calculate_total(int a, int b) {
+    return a + b;
+}]]></replacement>
+            <reason>Replace the complete calculate_total function.</reason>
+        </change>
+""",
+    "cpp": r"""        <!-- Example 3: Symbol (Tree-Sitter) — C++ grammar -->
+        <change id="chg-006" path="example.cpp" operation="replace">
+            <target>
+                <symbol>
+                    <type>function</type>
+                    <name>calculateTotal</name>
+                </symbol>
+            </target>
+            <replacement><![CDATA[int calculateTotal(int a, int b) {
+    return a + b;
+}]]></replacement>
+            <reason>Replace the complete calculateTotal function.</reason>
+        </change>
+""",
+}
+
+
+def _symbol_schema_example(symbol_languages=None) -> str:
+    available = tuple(symbol_languages or ())
+    for language in available:
+        if language in _SYMBOL_SCHEMA_EXAMPLES:
+            return _SYMBOL_SCHEMA_EXAMPLES[language]
+    return _SYMBOL_SCHEMA_EXAMPLES["python"]
+
 
 _SCHEMA_TAIL = r"""    </changes>
 </response>"""
 
 
-def protocol_schema(include_symbol: bool = True) -> str:
-    """XML response schema example; the <symbol> example is optional."""
-    return _SCHEMA_HEAD + (_SCHEMA_SYMBOL_EXAMPLE if include_symbol else "") + _SCHEMA_TAIL
+def protocol_schema(include_symbol: bool = True, symbol_languages=None) -> str:
+    """XML response schema; Symbol example matches an installed grammar."""
+    example = _symbol_schema_example(symbol_languages) if include_symbol else ""
+    return _SCHEMA_HEAD + example + _SCHEMA_TAIL
 
 
 PROTOCOL_SCHEMA = protocol_schema(True)
@@ -194,7 +292,7 @@ OUTPUT_CONTRACT_TEXT = (
 # Core instructions (what goes inside <system>) - single source of truth.
 # Symbol (Tree-Sitter) targeting is OPTIONAL: pass include_symbol=False to get
 # the same instructions without any mention of <symbol> mode.
-def core_system_instructions(include_symbol: bool = True) -> List[str]:
+def core_system_instructions(include_symbol: bool = True, symbol_languages=None) -> List[str]:
     if include_symbol:
         target_modes = (
             "Target modes (in order of preference): "
@@ -231,7 +329,8 @@ def core_system_instructions(include_symbol: bool = True) -> List[str]:
             "Tree-Sitter resolves exact boundaries (no regex ambiguity, handles nested braces/MATLAB end). "
             "The replacement overwrites the symbol's FULL lines, so keep the original indentation "
             "(e.g. a method inside a class stays indented). Add <class> for methods to disambiguate. "
-            "Supported: Python, JavaScript/TypeScript, Java, C/C++.")
+            "Available grammar names in this installation: "
+            + ", ".join(symbol_languages or ("python", "javascript", "typescript", "java", "c", "cpp")) + ".")
     items += [
         ("REGEX FOR STRUCTURAL REFACTORING: Use regex for renaming functions, "
          "changing signatures, swapping decorators, or updating imports — cases "
@@ -303,12 +402,12 @@ def _cdata(text: str) -> str:
     return "<![CDATA[" + str(text).replace("]]>", "]]]]><![CDATA[>") + "]]>"
 
 
-def render_system_block(include_symbol: bool = True, indent: str = "    ") -> str:
+def render_system_block(include_symbol: bool = True, indent: str = "    ", symbol_languages=None) -> str:
     """Render one clean, well-formed system block with a structured schema."""
     pad = indent
     inner = pad + "    "
     instructions = (
-        core_system_instructions(include_symbol)
+        core_system_instructions(include_symbol, symbol_languages)
         + list(ADDITIONAL_RULES)
         + [rule for _, rules in RULE_GROUPS for rule in rules]
     )
@@ -316,15 +415,18 @@ def render_system_block(include_symbol: bool = True, indent: str = "    ") -> st
     instruction_text = "\n\n".join(instructions)
     lines.append(f"{inner}<instructions>{_cdata(instruction_text)}</instructions>")
     lines.append(f"{inner}<response_schema>")
-    lines.extend(f"{inner}    {line}" for line in protocol_schema(include_symbol).splitlines())
+    lines.extend(f"{inner}    {line}" for line in
+                 protocol_schema(include_symbol, symbol_languages).splitlines())
     lines.append(f"{inner}</response_schema>")
     lines.append(f"{pad}</system>")
     return "\n".join(lines)
 
 
-def build_protocol_instruction(include_symbol: bool = True) -> str:
+def build_protocol_instruction(include_symbol: bool = True, symbol_languages=None) -> str:
     """Return the reusable protocol as valid XML, without escaped schema text."""
-    return "\n".join(("<prompt>", render_system_block(include_symbol, "    "), "</prompt>"))
+    return "\n".join(("<prompt>",
+                         render_system_block(include_symbol, "    ", symbol_languages),
+                         "</prompt>"))
 
 
 

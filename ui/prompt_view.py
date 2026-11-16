@@ -9,15 +9,16 @@ Fixes vs original:
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import (QCheckBox, QHBoxLayout, QLabel,
+from qtpy.QtCore import Qt
+from qtpy.QtGui import QKeySequence, QShortcut
+from qtpy.QtWidgets import (QCheckBox, QHBoxLayout, QLabel,
                                QPlainTextEdit, QPushButton, QVBoxLayout, QWidget)
 from ui.code_editor import mono_font
 from ui.find_bar import wrap_with_find_bar
 from ui.highlight import CodeHighlighter
 from ui.text_wrap import apply_wrap, follow_wrap
 from ui.layout_utils import flexible_label
+from core.optional_dependencies import tree_sitter_status, TREE_SITTER_INSTALL_COMMAND
 
 
 class PromptView(QWidget):
@@ -60,6 +61,9 @@ class PromptView(QWidget):
         self.chk_errors = QCheckBox("<errors>")
         self.chk_files = QCheckBox("<files> content")
         self.chk_symbol = QCheckBox("Symbol targeting (Tree-Sitter)")
+        self.lbl_symbol_status = flexible_label(QLabel(""))
+        self.lbl_symbol_status.setStyleSheet("color: #b45309; margin-left: 20px;")
+        self.lbl_symbol_status.setVisible(False)
         self.chk_binary = QCheckBox("Binary files (base64)")
         self.chk_project_tree = QCheckBox("Project tree (paths only)")
 
@@ -80,6 +84,8 @@ class PromptView(QWidget):
         self.chk_symbol.setToolTip(
             "Add <symbol_targeting> and the <symbol> instructions (Tree-Sitter)\n"
             "so the LLM can target functions / classes by name. Off by default.")
+        self._tree_sitter_status = tree_sitter_status()
+        self._configure_symbol_option()
         self.chk_binary.setToolTip(
             "Include binary file contents as base64 in the prompt. Off by default;\n"
             "binary files are otherwise represented by their size and SHA-256 hash.")
@@ -107,6 +113,7 @@ class PromptView(QWidget):
         opts_row.addLayout(binary_options)
         opts_row.addLayout(tree_options)
         layout.addLayout(opts_row)
+        layout.addWidget(self.lbl_symbol_status)
 
         self.lbl_opt_warn = flexible_label(QLabel(""))
         self.lbl_opt_warn.setStyleSheet("color: #b45309; margin-left: 20px;")
@@ -157,6 +164,35 @@ class PromptView(QWidget):
         # Keyboard shortcut
         sc = QShortcut(QKeySequence("Ctrl+G"), self)
         sc.activated.connect(self._generate_xml)
+
+    # ------------------------------------------------------------------
+    def _configure_symbol_option(self):
+        """Disable Symbol targeting when the optional core/grammars are absent."""
+        status = self._tree_sitter_status
+        if not status.available:
+            self.chk_symbol.setEnabled(False)
+            self.chk_symbol.setText("Symbol targeting (unavailable)")
+            message = (
+                "Symbol targeting is optional and is currently unavailable.\n"
+                f"{status.detail}\n\nInstall with:\n{TREE_SITTER_INSTALL_COMMAND}\n"
+                "Then restart AI Patch Manager.")
+            self.chk_symbol.setToolTip(message)
+            self.lbl_symbol_status.setText(
+                "Symbol targeting is disabled. Install the optional Tree-Sitter packages "
+                f"with: {TREE_SITTER_INSTALL_COMMAND}")
+            self.lbl_symbol_status.setVisible(True)
+            return
+
+        self.chk_symbol.setEnabled(True)
+        self.chk_symbol.setText("Symbol targeting (Tree-Sitter)")
+        languages = ", ".join(status.languages)
+        self.chk_symbol.setToolTip(
+            "Add <symbol_targeting> and <symbol> instructions.\n"
+            f"Working grammars in this environment: {languages}.\n"
+            "Other languages will use exact match / regex / line targeting.")
+        self.lbl_symbol_status.setText(
+            "Available Tree-Sitter grammars: " + languages)
+        self.lbl_symbol_status.setVisible(True)
 
     # ------------------------------------------------------------------
     def _load_opts(self):
@@ -249,7 +285,7 @@ class PromptView(QWidget):
         if not self.ctrl.prompt_text:
             self.main.error_box("Generate a prompt first.")
             return
-        from PySide6.QtWidgets import QApplication
+        from qtpy.QtWidgets import QApplication
         QApplication.clipboard().setText(self.ctrl.prompt_text)
         self.ctrl.mark_sent()
         self.main.patch_tab.reload()
@@ -261,7 +297,7 @@ class PromptView(QWidget):
         if not self.ctrl.prompt_text:
             self.main.error_box("Generate a prompt first.")
             return
-        from PySide6.QtWidgets import QFileDialog
+        from qtpy.QtWidgets import QFileDialog
         path, _ = QFileDialog.getSaveFileName(self, "Save prompt", "",
                                               "XML files (*.xml);;Text files (*.txt);;All files (*)")
         if path:

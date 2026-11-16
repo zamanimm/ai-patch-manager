@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QMessageBox,
+from qtpy.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QMessageBox,
                                QPlainTextEdit, QPushButton, QVBoxLayout, QWidget)
 from ui.code_editor import mono_font
 from ui.find_bar import wrap_with_find_bar
@@ -86,7 +86,7 @@ class InstructionsView(QWidget):
         if not text.strip():
             QMessageBox.information(self, "Copy", "Nothing to copy.")
             return
-        from PySide6.QtWidgets import QApplication
+        from qtpy.QtWidgets import QApplication
         QApplication.clipboard().setText(text)
         self.lbl_info.setText(f"Copied {len(text)} characters at "
                               f"{time.strftime('%H:%M:%S')}")
@@ -95,7 +95,7 @@ class InstructionsView(QWidget):
         text = self.view.toPlainText()
         if not text.strip():
             return
-        from PySide6.QtWidgets import QFileDialog
+        from qtpy.QtWidgets import QFileDialog
         path, _ = QFileDialog.getSaveFileName(self, "Save instructions", "",
                                               "XML files (*.xml);;Text files (*.txt);;All files (*)")
         if path:

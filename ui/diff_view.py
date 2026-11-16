@@ -8,8 +8,8 @@ Fixes vs original:
 """
 from __future__ import annotations
 
-from PySide6.QtGui import QFont, QTextCursor
-from PySide6.QtWidgets import QApplication, QPlainTextEdit
+from qtpy.QtGui import QFont, QTextCursor
+from qtpy.QtWidgets import QApplication, QPlainTextEdit
 
 from ui.highlight import DiffHighlighter
 from ui.text_wrap import follow_wrap

@@ -1,9 +1,11 @@
-"""Regression test for unified-diff background consistency (requires PySide6)."""
+"""Regression test for unified-diff background consistency (requires a Qt 6 binding)."""
 import os
 import unittest
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 try:
-    from PySide6.QtWidgets import QApplication
+    from core.qt_binding import load_qt_modules
+    load_qt_modules()
+    from qtpy.QtWidgets import QApplication
     from ui.diff_view import DiffView
     from ui.highlight import HAVE_PYGMENTS
     QT_AVAILABLE = True
@@ -11,7 +13,7 @@ except ImportError:
     QT_AVAILABLE = False
 
 
-@unittest.skipUnless(QT_AVAILABLE, 'PySide6 is required for GUI tests')
+@unittest.skipUnless(QT_AVAILABLE, 'A supported Qt 6 binding is required for GUI tests')
 class DiffColorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

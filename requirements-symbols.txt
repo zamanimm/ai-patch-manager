@@ -1,0 +1,8 @@
+# Optional structural targeting. The application runs normally without these.
+tree-sitter>=0.22
+tree-sitter-python
+tree-sitter-javascript
+tree-sitter-typescript
+tree-sitter-java
+tree-sitter-c
+tree-sitter-cpp

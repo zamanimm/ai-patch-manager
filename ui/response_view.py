@@ -5,7 +5,7 @@ the model (paste / clipboard / file import, parse & validate, view).
 """
 from __future__ import annotations
 
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit,
+from qtpy.QtWidgets import (QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit,
                                QPushButton, QVBoxLayout, QWidget)
 from ui.code_editor import mono_font
 from ui.find_bar import wrap_with_find_bar
@@ -61,7 +61,7 @@ class ResponseView(QWidget):
 
     # ------------------------------------------------------------------
     def _from_clipboard(self):
-        from PySide6.QtWidgets import QApplication
+        from qtpy.QtWidgets import QApplication
         text = QApplication.clipboard().text()
         if text.strip():
             self.txt_response.setPlainText(text)
@@ -69,7 +69,7 @@ class ResponseView(QWidget):
             QMessageBox.information(self, "Clipboard", "Clipboard is empty.")
 
     def _from_file(self):
-        from PySide6.QtWidgets import QFileDialog
+        from qtpy.QtWidgets import QFileDialog
         path, _ = QFileDialog.getOpenFileName(self, "Import response XML", "",
                                               "XML files (*.xml);;All files (*)")
         if path:
@@ -102,7 +102,7 @@ class ResponseView(QWidget):
 
     def _show_response_warning(self, text: str) -> None:
         """Only an explicit new Parse can show this dialog, never tab refresh."""
-        from PySide6.QtCore import Qt
+        from qtpy.QtCore import Qt
         dialog = QMessageBox(self)
         dialog.setIcon(QMessageBox.Warning)
         dialog.setWindowTitle("AI warning — review before applying")

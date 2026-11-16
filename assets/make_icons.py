@@ -2,7 +2,7 @@
 
     python assets/make_icons.py
 
-Needs only PySide6 (QtSvg). Edit icon.svg / icon_small.svg, run this, done.
+Needs PySide6 or PyQt6 with QtSvg. Edit icon.svg / icon_small.svg, run this, done.
 Sizes up to 32 px use the simplified icon_small.svg (readable when tiny);
 larger sizes use the detailed icon.svg.
 """
@@ -11,9 +11,14 @@ import struct
 import sys
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
-from PySide6.QtGui import QGuiApplication, QImage, QPainter
-from PySide6.QtSvg import QSvgRenderer
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+from core.qt_binding import load_qt_modules
+load_qt_modules()
+from qtpy.QtCore import QBuffer, QByteArray, QIODevice, Qt
+from qtpy.QtGui import QGuiApplication, QImage, QPainter
+from qtpy.QtSvg import QSvgRenderer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SIZES = (16, 24, 32, 48, 64, 128, 256, 512)

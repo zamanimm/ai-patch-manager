@@ -8,8 +8,8 @@ from __future__ import annotations
 import os
 import sys
 
-from PySide6.QtCore import QSize
-from PySide6.QtGui import QIcon
+from qtpy.QtCore import QSize
+from qtpy.QtGui import QIcon
 
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 ICON_SIZES = (16, 24, 32, 48, 64, 128, 256, 512)

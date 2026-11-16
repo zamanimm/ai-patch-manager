@@ -37,8 +37,10 @@ class Phase1CoreTests(unittest.TestCase):
 
 try:
     os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-    from PySide6.QtWidgets import QApplication, QComboBox, QPlainTextEdit
-    from PySide6.QtCore import Qt
+    from core.qt_binding import load_qt_modules
+    load_qt_modules()
+    from qtpy.QtWidgets import QApplication, QComboBox, QPlainTextEdit
+    from qtpy.QtCore import Qt
     from ui.file_view_dialog import read_preview_text
     from ui.diff_view import DiffView
     from ui.project_view import ModeDelegate
@@ -47,7 +49,7 @@ except ImportError:
     HAS_QT = False
 
 
-@unittest.skipUnless(HAS_QT, 'Requires PySide6')
+@unittest.skipUnless(HAS_QT, 'Requires a supported Qt 6 binding')
 class Phase1GuiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

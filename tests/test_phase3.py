@@ -145,8 +145,10 @@ class CommandExecutionIsolationTests(unittest.TestCase):
 
 try:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QPlainTextEdit
+    from core.qt_binding import load_qt_modules
+    load_qt_modules()
+    from qtpy.QtTest import QTest
+    from qtpy.QtWidgets import QApplication, QPlainTextEdit
     from ui.find_bar import FindBar
     from ui.guide_view import GuideView
     QT_AVAILABLE = True
@@ -154,7 +156,7 @@ except ImportError:
     QT_AVAILABLE = False
 
 
-@unittest.skipUnless(QT_AVAILABLE, "Requires PySide6")
+@unittest.skipUnless(QT_AVAILABLE, "Requires a supported Qt 6 binding")
 class Phase3GuiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

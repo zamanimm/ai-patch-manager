@@ -10,9 +10,9 @@ import os
 from bisect import bisect_right
 from typing import List, Tuple
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QTextCursor
-from PySide6.QtWidgets import QPlainTextEdit, QWidget
+from qtpy.QtCore import QPoint, QRect, QSize, Qt
+from qtpy.QtGui import QColor, QFont, QPainter, QTextCursor
+from qtpy.QtWidgets import QPlainTextEdit, QWidget
 
 from ui.text_wrap import follow_wrap
 

@@ -9,12 +9,15 @@ The whole batch is one transaction; Undo restores it from the backup.
 from __future__ import annotations
 
 import os
+import stat
+import shutil
+import tempfile
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
 from core import file_manager
 from core.backup_manager import BackupManager
-from core.patch_engine import PatchError, merge_file_changes, plan_file_operations
+from core.patch_engine import PatchError, compute_file_result, merge_file_changes, plan_file_operations
 from models.change import Change
 from models.transaction import FileRecord, Transaction
 
@@ -83,9 +86,23 @@ class TransactionRunner:
 
         tx = Transaction(project=os.path.basename(self.project_root.rstrip("/\\")),
                          task=task, summary=summary)
+        tx.change_records = [c.to_history_dict() for c in selected]
+        tx.apply_settings = {
+            name: getattr(self.settings, name)
+            for name in ("exact_match", "hash_validation", "context_match",
+                         "fuzzy_match", "fuzzy_threshold", "external_paths")
+            if hasattr(self.settings, name)
+        }
         report.transaction = tx
         snapshot_dir = self.backup_mgr.create_snapshot_dir(tx.id)
         tx.backup_dir = snapshot_dir
+        # Even when the user disables persistent backups, Apply still needs an
+        # ephemeral raw snapshot so a mid-batch failure can be rolled back.
+        runtime_snapshot_dir = snapshot_dir
+        temporary_snapshot_dir = ""
+        if not self.settings.backup_before_apply:
+            temporary_snapshot_dir = tempfile.mkdtemp(prefix="acp-apply-guard-")
+            runtime_snapshot_dir = temporary_snapshot_dir
 
         groups = plan_file_operations(selected)
 
@@ -98,6 +115,8 @@ class TransactionRunner:
                 old_hash = file_manager.hash_file_or_text(self._join(rel)) if content is not None else ""
                 if content is not None and not old_hash:
                     raise OSError(f"could not hash original file before backup: {rel}")
+                old_mode = (stat.S_IMODE(os.stat(self._join(rel)).st_mode)
+                            if content is not None else None)
                 rec = FileRecord(
                     path=rel,
                     operation=",".join(sorted({c.operation for c in groups[rel]})),
@@ -105,14 +124,21 @@ class TransactionRunner:
                     old_hash=old_hash,
                     existed_before=content is not None,
                     hash_format="raw-sha256",
+                    old_mode=old_mode,
                 )
-                if content is not None and self.settings.backup_before_apply:
+                if content is not None:
                     rec.backup_file = self.backup_mgr.store_original(
-                        snapshot_dir, self.project_root, rel)
+                        runtime_snapshot_dir, self.project_root, rel,
+                        allow_external=self.settings.external_paths)
+                rec.current_path = rel
+                rec.current_hash = old_hash
+                rec.current_exists = content is not None
                 tx.files.append(rec)
             self.log(f"[{tx.id}] backup OK ({len(groups)} files)")
         except OSError as exc:
             report.error = f"Backup failed, nothing was modified: {exc}"
+            if temporary_snapshot_dir:
+                shutil.rmtree(temporary_snapshot_dir, ignore_errors=True)
             return report
 
         # ---- APPLY ONE BY ONE; ANY FAILURE ROLLS THE BATCH BACK -------------
@@ -120,20 +146,41 @@ class TransactionRunner:
             for rel, chs in groups.items():
                 abs_path = self._join(rel)
                 original = originals[rel] or ""
-                new_content = self._compute_new(chs, original)
+                # File-level operations must not decode/rewrite binary data.
+                # A rename-only operation moves the original bytes unchanged.
                 if any(c.operation == "delete" for c in chs):
                     if os.path.isfile(abs_path):
                         file_manager.delete_file(abs_path)
-                else:
+                elif any(c.operation != "rename" for c in chs):
+                    new_content = self._compute_new(chs, original)
                     file_manager.write_text(abs_path, new_content)
                 rec = next(r for r in tx.files if r.path == rel)
                 rec.new_hash = "" if any(c.operation == "delete" for c in chs) \
                     else file_manager.hash_file_or_text(abs_path)
                 if not any(c.operation == "delete" for c in chs) and not rec.new_hash:
                     raise OSError(f"could not hash updated file after write: {rel}")
-                # capture the post-apply state so REDO can restore it exactly
-                if rec.new_hash and self.settings.backup_before_apply:
-                    self.backup_mgr.store_new(snapshot_dir, rel, abs_path)
+                rec.current_path = rel
+                rec.current_hash = rec.new_hash
+                rec.current_exists = not any(c.operation == "delete" for c in chs)
+                rec.new_mode = (stat.S_IMODE(os.stat(abs_path).st_mode)
+                                if rec.current_exists else None)
+                rec.current_mode = rec.new_mode
+                # Store the most compact safe Redo representation. The immutable
+                # original snapshot remains the trusted base; a byte delta is used
+                # only when it is materially smaller than a full .new snapshot.
+                if self.settings.backup_before_apply:
+                    original_snapshot = (os.path.join(snapshot_dir, rec.backup_file)
+                                         if rec.backup_file else "")
+                    if rec.existed_before and not original_snapshot:
+                        raise OSError(f"original backup was not created for {rel}")
+                    strategy, artifact = self.backup_mgr.store_redo_artifact(
+                        snapshot_dir, rel, original_snapshot, abs_path,
+                        rec.old_hash, rec.new_hash, rec.old_mode, rec.new_mode)
+                    rec.redo_strategy = strategy
+                    rec.redo_artifact_file = artifact if strategy == "delta" else ""
+                else:
+                    rec.redo_strategy = "unavailable"
+                    rec.redo_artifact_file = ""
                 for c in chs:
                     c.status = "applied"
                     report.applied_changes.append(c.id)
@@ -147,17 +194,37 @@ class TransactionRunner:
                     rec = next((r for r in tx.files if r.path == ch.path), None)
                     if rec is not None:
                         rec.new_path = ch.new_path      # undo / redo / rollback need to know where it went
+                        rec.current_path = ch.new_path
                     self.log(f"[{tx.id}] {ch.id} renamed {ch.path} -> {ch.new_path}")
         except (PatchError, OSError) as exc:
             self.log(f"[{tx.id}] FAILED: {exc} - rolling back")
-            self._rollback(snapshot_dir, tx)
-            tx.status = "failed"
-            report.rolled_back = True
-            report.error = f"Apply failed, transaction rolled back:\n{exc}"
+            rollback_errors = self._rollback(runtime_snapshot_dir, tx)
+            tx.status = "failed" if not rollback_errors else "rollback_failed"
+            report.rolled_back = not rollback_errors
+            if rollback_errors:
+                report.error = (
+                    f"CRITICAL: Apply failed and rollback was incomplete:\n{exc}\n\n"
+                    + "\n".join(rollback_errors)
+                    + f"\n\nRecovery snapshots were retained at: {runtime_snapshot_dir}")
+                if temporary_snapshot_dir:
+                    tx.backup_dir = runtime_snapshot_dir
+            else:
+                report.error = f"Apply failed, transaction rolled back:\n{exc}"
             for c in selected:
                 if c.status != "applied":
                     c.status = "failed"
+            if temporary_snapshot_dir and not rollback_errors:
+                for rec in tx.files:
+                    rec.backup_file = ""
+                shutil.rmtree(temporary_snapshot_dir, ignore_errors=True)
             return report
+
+        if temporary_snapshot_dir:
+            # The ephemeral guard is only for failures during Apply. It must
+            # not be referenced by the persisted transaction history.
+            for rec in tx.files:
+                rec.backup_file = ""
+            shutil.rmtree(temporary_snapshot_dir, ignore_errors=True)
 
         tx.status = "applied"
         report.ok = True
@@ -166,25 +233,23 @@ class TransactionRunner:
 
     # -- content computation ---------------------------------------------------
     def _compute_new(self, chs: List[Change], original: str) -> str:
-        region_ops = [c for c in chs if c.is_region_op]
-        text = merge_file_changes(original, region_ops, self.settings) if region_ops else original
-        for c in chs:
-            if c.operation == "create":
-                text = (c.content or "") + "\n"
-            elif c.operation == "append" and not c.has_anchor:      # end of file
-                sep = "" if text.endswith("\n") or text == "" else "\n"
-                text = text + sep + (c.content or "") + "\n"
-            elif c.operation == "prepend" and not c.has_anchor:     # start of file
-                text = (c.content or "") + "\n" + text
-        return text
+        return compute_file_result(original, chs, self.settings)
 
-    def _rollback(self, snapshot_dir: str, tx: Transaction) -> None:
+    def _rollback(self, snapshot_dir: str, tx: Transaction) -> List[str]:
+        """Restore every touched path and report any incomplete recovery."""
+        errors = []
         for rec in reversed(tx.files):
             try:
                 if rec.new_path:                        # a rename already happened: move it back first
-                    file_manager.delete_file(self._join(rec.new_path))
+                    renamed = self._join(rec.new_path)
+                    if os.path.isfile(renamed):
+                        file_manager.delete_file(renamed)
                 self.backup_mgr.restore(snapshot_dir, self.project_root,
-                                        rec.path, rec.existed_before)
+                                        rec.path, rec.existed_before,
+                                        allow_external=self.settings.external_paths)
                 self.log(f"[{tx.id}] rollback restored {rec.path}")
-            except OSError as exc:  # pragma: no cover
-                self.log(f"[{tx.id}] ROLLBACK ERROR {rec.path}: {exc}")
+            except Exception as exc:
+                message = f"{rec.path}: {exc}"
+                errors.append(message)
+                self.log(f"[{tx.id}] ROLLBACK ERROR {message}")
+        return errors

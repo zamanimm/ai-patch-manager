@@ -1,9 +1,9 @@
 """Small layout helpers for dynamic content that must never grow a window wider."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QLabel, QSizePolicy
+from qtpy.QtCore import Qt
+from qtpy.QtGui import QGuiApplication
+from qtpy.QtWidgets import QLabel, QSizePolicy
 
 
 def flexible_label(label: QLabel, *, selectable: bool = False) -> QLabel:

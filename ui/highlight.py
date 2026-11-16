@@ -14,9 +14,9 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
-from PySide6.QtWidgets import QApplication
+from qtpy.QtCore import QTimer
+from qtpy.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
+from qtpy.QtWidgets import QApplication
 
 try:                                     # optional dependency
     from pygments.lexers import get_lexer_by_name, get_lexer_for_filename

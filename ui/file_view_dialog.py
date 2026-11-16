@@ -11,9 +11,9 @@ import os
 import sys
 from typing import List, Optional, Tuple
 
-from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices, QKeySequence, QPalette, QShortcut
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog,
+from qtpy.QtCore import Qt, QUrl
+from qtpy.QtGui import QDesktopServices, QKeySequence, QPalette, QShortcut
+from qtpy.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog,
                                QHBoxLayout, QLabel, QMenu, QMessageBox,
                                QPushButton, QSizePolicy, QVBoxLayout)
 

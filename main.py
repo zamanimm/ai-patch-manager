@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-"""AI Patch Manager - entry point.
+"""AI Patch Manager entry point.
 
-LLM proposes; the application validates; the user approves;
-the application applies.
+LLM proposes; the application validates; the user approves; the application applies.
 
-Usage:
-    python main.py              run (a terminal you started it from stays yours)
-    python main.py --detach     run on its own and give the terminal back
-    Windows: double-click "AI Patch Manager.pyw" - no terminal window at all
+Qt 6 is provided by PySide6 directly (QtPy is optional) or by PyQt6 through
+QtPy. When both are installed PySide6 is preferred unless QT_API selects
+another provider.
 """
 from __future__ import annotations
 
@@ -18,20 +16,19 @@ def main(argv=None) -> int:
     argv = list(sys.argv if argv is None else argv)
     from core import startup
 
-    if startup.wants_detach(argv):                    # --detach: start independently, return the prompt
+    if startup.wants_detach(argv):
         if startup.spawn_detached(argv):
             return 0
-    startup.hide_console_if_owned()                   # double-clicked main.py: no console window behind the app
-    startup.install_crash_handler()                   # errors are shown / logged even without a terminal
+    startup.hide_console_if_owned()
+    startup.install_crash_handler()
 
     try:
-        from PySide6 import QtWidgets  # noqa: F401
-    except ImportError:
-        startup.show_message(
-            "AI Patch Manager",
-            "PySide6 is required for the desktop UI.\n\n"
-            "Install the dependencies first:\n\n    pip install -r requirements.txt")
+        from core.qt_binding import load_qt_modules
+        load_qt_modules()
+    except ImportError as exc:
+        startup.show_message("AI Patch Manager - Qt dependency", str(exc))
         return 1
+
     from ui.main_window import run
     run()
     return 0

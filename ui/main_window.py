@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import QSettings, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QKeySequence, QTextCursor
-from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDockWidget, QHBoxLayout,
+from qtpy.QtCore import QSettings, Qt, QTimer, Signal
+from qtpy.QtGui import QAction, QKeySequence, QTextCursor
+from qtpy.QtWidgets import (QApplication, QComboBox, QDialog, QDockWidget, QHBoxLayout,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
                                QPushButton,
@@ -64,6 +64,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.ctrl = Controller()
+        from core.qt_binding import selected_qt_api
+        self.ctrl.log(f"Qt provider selected: {selected_qt_api() or 'unknown'}")
         self._settings_save_timer = QTimer(self)
         self._settings_save_timer.setSingleShot(True)
         self._settings_save_timer.setInterval(450)

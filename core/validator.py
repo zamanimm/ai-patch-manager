@@ -40,7 +40,7 @@ def locate(change: Change, file_text: str, settings, file_path: str = "") -> Tup
             if span is not None:
                 return span, f"symbol:{kind}"
             # Symbol resolution failed - return error or fall through
-            if kind in ("no_tree_sitter", "no_grammar"):
+            if kind in ("no_tree_sitter", "no_grammar", "unsupported_language"):
                 # Tree-Sitter not available: fall through to other modes, but
                 # if the change has no other way to find its target, say why
                 if not (target.match or target.regex or target.line_start):
@@ -228,9 +228,8 @@ def _symbol_error_text(ch: Change, kind: str) -> str:
                                  f"for {ch.path} (supported: Python, JS/TS/TSX, Java, C/C++)"),
         "unsupported_symbol_type": (f"unsupported symbol type '{sym.type if sym else ''}' "
                                     f"for {ch.path}"),
-        "no_tree_sitter": ("Tree-Sitter is not installed "
-                           "(pip install tree-sitter tree-sitter-python tree-sitter-javascript "
-                           "tree-sitter-typescript tree-sitter-java tree-sitter-c tree-sitter-cpp)"),
+        "no_tree_sitter": ("Tree-Sitter is an optional dependency and is not installed. "
+                           "Install it with: python -m pip install -r requirements-symbols.txt"),
         "no_grammar": _no_grammar_text(desc, ch.path),
     }
     return texts.get(kind, f"symbol resolution failed ({kind}) for {desc}")

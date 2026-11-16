@@ -10,8 +10,8 @@ Fixes vs original:
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QListWidget,
+from qtpy.QtCore import Qt, QTimer
+from qtpy.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QListWidget,
                                QListWidgetItem, QMenu, QMessageBox, QPushButton,
                                QSplitter, QVBoxLayout, QWidget)
 

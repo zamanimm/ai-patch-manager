@@ -105,5 +105,70 @@ class Change:
     def compute_hash(self) -> str:
         return sha256_text(self.content or "")
 
+    def to_history_dict(self) -> dict:
+        """Serialize the declarative part of a change for safe per-change undo.
+
+        Validation/UI transient state is deliberately excluded. The history
+        record stores only what is needed to deterministically rebuild the
+        transaction from its original file snapshots.
+        """
+        target = {
+            "match": self.target.match,
+            "hash": self.target.hash,
+            "line_start": self.target.line_start,
+            "line_end": self.target.line_end,
+            "regex": self.target.regex,
+            "symbol": None,
+        }
+        if self.target.symbol is not None:
+            target["symbol"] = {
+                "type": self.target.symbol.type,
+                "name": self.target.symbol.name,
+                "class_name": self.target.symbol.class_name,
+                "parameters": list(self.target.symbol.parameters),
+            }
+        return {
+            "id": self.id,
+            "path": self.path,
+            "operation": self.operation,
+            "target": target,
+            "content": self.content,
+            "new_path": self.new_path,
+            "summary": self.summary,
+            "reason": self.reason,
+            "confidence": self.confidence,
+            "edited": bool(self.edited),
+        }
+
+    @staticmethod
+    def from_history_dict(data: dict) -> "Change":
+        """Rebuild a declarative Change saved by a newer transaction."""
+        raw_target = data.get("target") or {}
+        raw_symbol = raw_target.get("symbol")
+        symbol = None
+        if isinstance(raw_symbol, dict):
+            symbol = SymbolTarget(
+                type=raw_symbol.get("type", ""),
+                name=raw_symbol.get("name", ""),
+                class_name=raw_symbol.get("class_name"),
+                parameters=list(raw_symbol.get("parameters") or []),
+            )
+        target = Target(
+            match=raw_target.get("match"),
+            hash=raw_target.get("hash"),
+            line_start=raw_target.get("line_start"),
+            line_end=raw_target.get("line_end"),
+            regex=raw_target.get("regex"),
+            symbol=symbol,
+        )
+        return Change(
+            id=str(data["id"]), path=str(data["path"]),
+            operation=str(data["operation"]), target=target,
+            content=data.get("content"), new_path=data.get("new_path"),
+            summary=data.get("summary", ""), reason=data.get("reason", ""),
+            confidence=data.get("confidence"), edited=bool(data.get("edited", False)),
+            valid=True, status="valid", selected=True,
+        )
+
     def __repr__(self) -> str:  # pragma: no cover
         return f"<Change {self.id} {self.operation} {self.path} [{self.status}]>"

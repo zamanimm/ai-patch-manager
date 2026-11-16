@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QObject, QSettings, Signal
-from PySide6.QtGui import QTextOption
-from PySide6.QtWidgets import QPlainTextEdit
+from qtpy.QtCore import QObject, QSettings, Signal
+from qtpy.QtGui import QTextOption
+from qtpy.QtWidgets import QPlainTextEdit
 
 SETTINGS_KEY = "wrap_text"
 

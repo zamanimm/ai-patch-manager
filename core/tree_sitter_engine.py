@@ -105,8 +105,20 @@ class TreeSitterEngine:
             return False
 
     def is_available(self) -> bool:
-        """Return True if Tree-Sitter is installed and available."""
+        """Return True if the Tree-Sitter core package can be imported."""
         return self._tree_sitter_available
+
+    def available_languages(self) -> tuple:
+        """Return languages whose grammar parser can actually be constructed.
+
+        Tree-Sitter is an optional feature and grammar packages are optional per
+        language. This method deliberately tests parser construction rather than
+        merely checking whether a distribution appears to be installed.
+        """
+        if not self._tree_sitter_available:
+            return ()
+        return tuple(language for language in self._MODERN_GRAMMARS
+                     if self.get_parser(language) is not None)
 
     def detect_language(self, file_path: str) -> Optional[str]:
         """Detect language from file path.
@@ -204,7 +216,11 @@ class TreeSitterEngine:
         out = [f"python {sys.version.split()[0]}"]
         try:
             import importlib.metadata as md
-            for pkg in ("tree-sitter", "tree-sitter-languages"):
+            packages = ("tree-sitter", "tree-sitter-languages",
+                        "tree-sitter-python", "tree-sitter-javascript",
+                        "tree-sitter-typescript", "tree-sitter-java",
+                        "tree-sitter-c", "tree-sitter-cpp")
+            for pkg in packages:
                 try:
                     out.append(f"{pkg} {md.version(pkg)}")
                 except Exception:

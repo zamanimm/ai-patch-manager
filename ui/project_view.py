@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import Qt, QTimer, Signal, QUrl
+from qtpy.QtCore import Qt, QTimer, Signal, QUrl
 from ui.layout_utils import flexible_label
-from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QComboBox, QMenu, QHBoxLayout, QHeaderView, QLabel,
+from qtpy.QtGui import QDesktopServices
+from qtpy.QtWidgets import (QComboBox, QMenu, QHBoxLayout, QHeaderView, QLabel,
                                QPushButton, QTreeWidget, QTreeWidgetItem, QStyledItemDelegate, QAbstractItemView,
                                QVBoxLayout, QWidget)
 
@@ -155,7 +155,7 @@ class ProjectView(QWidget):
 
     # ------------------------------------------------------------------
     def _open(self):
-        from PySide6.QtWidgets import QFileDialog
+        from qtpy.QtWidgets import QFileDialog
         root = QFileDialog.getExistingDirectory(self, "Select project folder",
                                                 self.ctrl.project.root or "")
         if root:

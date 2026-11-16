@@ -9,8 +9,8 @@ from __future__ import annotations
 import os
 from typing import List
 
-from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QTextBrowser, QVBoxLayout, QWidget
+from qtpy.QtGui import QFont
+from qtpy.QtWidgets import QTextBrowser, QVBoxLayout, QWidget
 
 from core.controller import APP_DIR
 from ui.find_bar import wrap_with_find_bar
@@ -25,7 +25,7 @@ FALLBACK = """# How to Use
 2. **Prompt** tab: write the task, press *Generate* (Ctrl+G) and copy the prompt into your LLM.
 3. **Response** tab: paste the LLM's answer and press *Parse + Validate*.
 4. **Changes / Preview** tab: review every diff, then *Apply*.
-5. **History** tab: undo any apply.
+5. **History** tab: select a transaction to undo/redo the whole Apply, or expand a file and select a `chg-...` row to undo/redo just that change. Older history entries support transaction-level undo only.
 
 (The full guide is README.md in the application folder - it was not found.)
 """

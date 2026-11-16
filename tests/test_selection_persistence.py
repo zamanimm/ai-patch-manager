@@ -35,11 +35,13 @@ class WorkspaceSelectionPersistenceTests(unittest.TestCase):
         """GUI regression: restored root + empty files must initiate a scan."""
         try:
             os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-            from PySide6.QtCore import Qt
-            from PySide6.QtWidgets import QApplication
+            from core.qt_binding import load_qt_modules
+            load_qt_modules()
+            from qtpy.QtCore import Qt
+            from qtpy.QtWidgets import QApplication
             from ui.project_view import ProjectView
         except ImportError:
-            self.skipTest("Requires PySide6")
+            self.skipTest("Requires a supported Qt 6 binding")
 
         app = QApplication.instance() or QApplication([])
 
@@ -92,7 +94,7 @@ class WorkspaceSelectionPersistenceTests(unittest.TestCase):
                     app.processEvents()
                     if view._tree_ready:
                         break
-                    from PySide6.QtTest import QTest
+                    from qtpy.QtTest import QTest
                     QTest.qWait(20)
                 self.assertTrue(view._tree_ready, "startup did not finish the initial scan")
                 found = None
@@ -117,11 +119,13 @@ class WorkspaceSelectionPersistenceTests(unittest.TestCase):
         """Hidden/excluded/large files remain selected if still present on disk."""
         try:
             os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-            from PySide6.QtCore import Qt
-            from PySide6.QtWidgets import QApplication
+            from core.qt_binding import load_qt_modules
+            load_qt_modules()
+            from qtpy.QtCore import Qt
+            from qtpy.QtWidgets import QApplication
             from ui.project_view import ProjectView
         except ImportError:
-            self.skipTest("Requires PySide6")
+            self.skipTest("Requires a supported Qt 6 binding")
 
         app = QApplication.instance() or QApplication([])
 
@@ -162,7 +166,7 @@ class WorkspaceSelectionPersistenceTests(unittest.TestCase):
             ctrl = ControllerStub(root)
             view = ProjectView(ctrl, MainStub())
             try:
-                from PySide6.QtTest import QTest
+                from qtpy.QtTest import QTest
                 for _ in range(100):
                     app.processEvents()
                     if view._tree_ready:

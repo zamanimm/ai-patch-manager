@@ -138,6 +138,51 @@ class RealWorldCdataCopyTests(unittest.TestCase):
         span, kind = locate(changes[0], '// test header\n' + original + '\n', settings)
         self.assertEqual((span, kind), ((1, 6), 'exact'))
 
+    def test_single_encoded_indent_inside_valid_cdata_is_repaired(self):
+        """Only one &#x20; in CDATA, without tag escapes or trailing slashes."""
+        source = 'def run():\n    return 42'
+        mangled = 'def run():\n&#x20;   return 42'
+        raw = (
+            '<response version="1.0"><status>success</status><changes>'
+            '<change id="x" path="app.py" operation="replace">'
+            '<target><match><![CDATA[' + mangled + ']]></match></target>'
+            '<replacement><![CDATA[' + mangled.replace('42', '43') + ']]></replacement>'
+            '</change></changes></response>'
+        )
+        _, _, _, changes = parse_response(raw)
+        self.assertEqual(changes[0].target.match, source)
+        self.assertEqual(changes[0].content, source.replace('42', '43'))
+        clean = normalize_escaped_xml_copy(raw)
+        self.assertEqual(clean, normalize_escaped_xml_copy(clean))
+
+    def test_only_cdata_payload_is_space_entity(self):
+        raw = ('<response version="1.0"><status>success</status><changes>'
+               '<change id="x" path="app.py" operation="replace">'
+               '<target><match><![CDATA[&#x20;]]></match></target>'
+               '<replacement><![CDATA[&#x20;]]></replacement>'
+               '</change></changes></response>')
+        _, _, _, changes = parse_response(raw)
+        self.assertEqual(changes[0].target.match, ' ')
+        self.assertEqual(changes[0].content, ' ')
+        self.assertEqual(normalize_escaped_xml_copy(normalize_escaped_xml_copy(raw)),
+                         normalize_escaped_xml_copy(raw))
+
+    def test_lone_entity_on_own_line_inside_cdata(self):
+        code = 'first\n&#x20;\nlast'
+        raw = ('<response version="1.0"><status>success</status><changes>'
+               '<change id="x" path="app.py" operation="create">'
+               '<replacement><![CDATA[' + code + ']]></replacement>'
+               '</change></changes></response>')
+        self.assertEqual(parse_response(raw)[3][0].content, 'first\n \nlast')
+
+    def test_single_encoded_indent_does_not_alter_literal_in_code(self):
+        code = 'def f():\n    entity = "&#x20;"\n    return entity'
+        raw = ('<response version="1.0"><status>success</status><changes>'
+               '<change id="x" path="app.py" operation="create">'
+               '<replacement><![CDATA[' + code + ']]></replacement>'
+               '</change></changes></response>')
+        self.assertEqual(parse_response(raw)[3][0].content, code)
+
     def test_escaped_xml_tags_plus_mangled_cdata(self):
         raw = (
             '\\<response version="1.0">\\\n'

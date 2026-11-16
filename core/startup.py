@@ -84,9 +84,10 @@ def crash_log_path() -> str:
 def show_message(title: str, text: str) -> None:
     """A message the user will see even when there is no terminal."""
     try:
-        from PySide6.QtWidgets import QApplication, QMessageBox
-        if QApplication.instance() is not None:
-            QMessageBox.critical(None, title, text)
+        from core.qt_binding import load_qt_modules
+        qt = load_qt_modules()
+        if qt.QtWidgets.QApplication.instance() is not None:
+            qt.QtWidgets.QMessageBox.critical(None, title, text)
             return
     except Exception:
         pass

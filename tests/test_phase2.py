@@ -98,6 +98,9 @@ class Phase2BackupTests(unittest.TestCase):
                 str(root), settings, str(Path(tmp) / "backups")).apply([change])
             self.assertTrue(report.ok, report.error)
             tx = report.transaction
+            # Text I/O normalizes CRLF to LF in this path, so the hybrid
+            # manager should prefer a byte-exact full snapshot fallback.
+            self.assertEqual(tx.files[0].redo_strategy, "snapshot")
             history = HistoryManager(str(Path(tmp) / "history.json"),
                                      str(Path(tmp) / "backups"))
             history.record(tx)

@@ -1,0 +1,31 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<project>
+  <name>Untitled</name>
+  <root></root>
+  <include/>
+  <exclude>
+    <pattern>**/.git/**</pattern>
+    <pattern>**/__pycache__/**</pattern>
+    <pattern>**/data/**</pattern>
+    <pattern>**/cache/**</pattern>
+    <pattern>**/node_modules/**</pattern>
+    <pattern>**/backups/**</pattern>
+    <pattern>**/storage/**</pattern>
+  </exclude>
+  <settings>
+    <exact_match>true</exact_match>
+    <hash_validation>true</hash_validation>
+    <context_match>true</context_match>
+    <fuzzy_match>false</fuzzy_match>
+    <require_preview>true</require_preview>
+    <require_confirmation>true</require_confirmation>
+    <backup_before_apply>true</backup_before_apply>
+    <conflict_detection>true</conflict_detection>
+    <external_paths>false</external_paths>
+    <auto_apply>false</auto_apply>
+    <include_system>false</include_system>
+    <include_files>true</include_files>
+    <include_project_tree>false</include_project_tree>
+    <fuzzy_threshold>0.9</fuzzy_threshold>
+  </settings>
+</project>

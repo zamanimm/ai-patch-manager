@@ -295,10 +295,17 @@ class Controller:
         self.save_workspace_config()
 
     # -- prompt generation (sections 45-48) --------------------------------------
+    def _symbol_capabilities(self):
+        """Return effective Symbol availability and installed grammar names."""
+        from core.optional_dependencies import tree_sitter_status
+        status = tree_sitter_status()
+        requested = bool(getattr(self.project.settings, "include_symbol", False))
+        return requested and status.available, status.languages, status
+
     def instructions_text(self) -> str:
         """The pure patch-system instructions for the LLM (no files/task)."""
-        include_symbol = getattr(self.project.settings, "include_symbol", False)
-        return prompt_builder.build_protocol_instruction(include_symbol)
+        include_symbol, languages, _status = self._symbol_capabilities()
+        return prompt_builder.build_protocol_instruction(include_symbol, languages)
 
     # -- per-file selections (line ranges for selection / context modes) --------
     def load_file_selections(self, root: str) -> None:
@@ -398,12 +405,14 @@ class Controller:
             else "<!-- files omitted to save tokens -->"
         rules = [r.strip() for r in (self.project.rules or []) if r and r.strip()]
         errors_text = (errors or "").strip()
-        include_symbol = getattr(s, "include_symbol", False)
+        symbol_requested = bool(getattr(s, "include_symbol", False))
+        include_symbol, symbol_languages, symbol_status = self._symbol_capabilities()
         include_rules = getattr(s, "include_user_rules", True) and bool(rules)
         include_errors = getattr(s, "include_errors", False) and bool(errors_text)
         parts = ["<prompt>"]
         if s.include_system:
-            parts.append(prompt_builder.render_system_block(include_symbol, "    "))
+            parts.append(prompt_builder.render_system_block(
+                include_symbol, "    ", symbol_languages))
         else:
             parts.append("    <!-- system instructions omitted to save tokens: "
                          "already known to the LLM -->")
@@ -433,12 +442,21 @@ class Controller:
             tree_xml = prompt_builder.build_project_tree(self.project.root, self.files)
             parts.extend("    " + line for line in tree_xml.splitlines())
 
-        # Symbol targeting (Tree-Sitter) - optional
+        # Symbol targeting is included only when at least one grammar is usable.
         if include_symbol:
             parts += [
-                "    <symbol_targeting>",
+                "    <symbol_targeting available=\"true\">",
                 "        <description>Tree-Sitter structural targeting for semantic precision</description>",
-                "        <usage>Use &lt;symbol&gt; element in target to specify functions, methods, classes by name and type</usage>",
+                "        <available_languages>" + ", ".join(symbol_languages) + "</available_languages>",
+                "        <usage>Use &lt;symbol&gt; only for the available languages; otherwise use match, regex, or line targeting.</usage>",
+                "    </symbol_targeting>"
+            ]
+        elif symbol_requested:
+            parts += [
+                "    <symbol_targeting available=\"false\">",
+                "        <description>Tree-Sitter is not available in this installation.</description>",
+                "        <usage>Do not emit symbol targets. Use match, regex, or line targeting instead.</usage>",
+                "        <install_command>python -m pip install -r requirements-symbols.txt</install_command>",
                 "    </symbol_targeting>"
             ]
         
@@ -647,6 +665,18 @@ class Controller:
         tx = self.history.redo(self.project.root, tx_id)
         self.state = State.APPLIED
         self.log(f"redo OK: transaction {tx_id} re-applied")
+        return tx
+
+    def undo_change(self, tx_id: str, change_id: str) -> Transaction:
+        tx = self.history.undo_change(self.project.root, tx_id, change_id)
+        self.state = State.ROLLED_BACK if tx.status == "rolled_back" else State.APPLIED
+        self.log(f"single-change undo OK: {change_id} in transaction {tx_id}")
+        return tx
+
+    def redo_change(self, tx_id: str, change_id: str) -> Transaction:
+        tx = self.history.redo_change(self.project.root, tx_id, change_id)
+        self.state = State.APPLIED
+        self.log(f"single-change redo OK: {change_id} in transaction {tx_id}")
         return tx
 
     def baseline_vs_current_diff(self) -> str:

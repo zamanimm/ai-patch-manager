@@ -1,0 +1,2 @@
+# Shared non-Qt dependencies. An existing PySide6 installation works without QtPy.
+lxml>=4.9

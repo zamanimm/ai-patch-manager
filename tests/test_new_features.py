@@ -162,8 +162,10 @@ class FeatureCoreTests(unittest.TestCase):
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 try:
-    from PySide6.QtWidgets import QApplication, QMessageBox
-    from PySide6.QtCore import Qt
+    from core.qt_binding import load_qt_modules
+    load_qt_modules()
+    from qtpy.QtWidgets import QApplication, QMessageBox
+    from qtpy.QtCore import Qt
     from ui.changes_view import ChangesView
     from ui.project_view import ProjectView
     GUI_AVAILABLE = True
@@ -190,7 +192,7 @@ class _FakeWindow:
         pass
 
 
-@unittest.skipUnless(GUI_AVAILABLE, 'PySide6 needed for offscreen GUI test')
+@unittest.skipUnless(GUI_AVAILABLE, 'Qt binding needed for offscreen GUI test')
 class FeatureGuiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

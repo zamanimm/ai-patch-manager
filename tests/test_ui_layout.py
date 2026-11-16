@@ -9,9 +9,11 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QSettings
-    from PySide6.QtGui import QGuiApplication, QTextOption
-    from PySide6.QtWidgets import QApplication, QPlainTextEdit
+    from core.qt_binding import load_qt_modules
+    load_qt_modules()
+    from qtpy.QtCore import QSettings
+    from qtpy.QtGui import QGuiApplication, QTextOption
+    from qtpy.QtWidgets import QApplication, QPlainTextEdit
     from ui.file_view_dialog import FileViewDialog
     from ui.layout_utils import flexible_label
     from ui.text_wrap import WrapState, apply_wrap
@@ -20,7 +22,7 @@ except ImportError:
     QT_AVAILABLE = False
 
 
-@unittest.skipUnless(QT_AVAILABLE, "Install PySide6 to run GUI tests")
+@unittest.skipUnless(QT_AVAILABLE, "Install a Qt 6 binding to run GUI tests")
 class LayoutTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

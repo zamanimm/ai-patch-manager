@@ -16,9 +16,9 @@ import re
 from bisect import bisect_left
 from typing import List, Optional, Tuple
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QKeySequence, QShortcut, QTextCursor
-from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QLineEdit,
+from qtpy.QtCore import Qt, QTimer, Signal
+from qtpy.QtGui import QColor, QKeySequence, QShortcut, QTextCursor
+from qtpy.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QLineEdit,
                                QPushButton, QTextEdit, QToolButton,
                                QVBoxLayout, QWidget)
 

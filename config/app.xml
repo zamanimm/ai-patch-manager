@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <project>
   <name>Untitled</name>
-  <root>D:\Software\LangFlip</root>
+  <root>D:\Atlas\.obsidian\plugins\any-rtl</root>
   <include/>
   <exclude>
     <pattern>**/.git/**</pattern>
@@ -30,7 +30,7 @@
     <include_files>true</include_files>
     <include_symbol>false</include_symbol>
     <include_user_rules>false</include_user_rules>
-    <include_errors>false</include_errors>
+    <include_errors>true</include_errors>
     <include_binary_files>false</include_binary_files>
     <include_project_tree>false</include_project_tree>
     <fuzzy_threshold>0.9</fuzzy_threshold>

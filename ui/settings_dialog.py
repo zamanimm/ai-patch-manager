@@ -1,7 +1,7 @@
 """Settings dialog: matching + safety toggles and user rules (sections 44, 71-73)."""
 from __future__ import annotations
 
-from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox,
+from qtpy.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFormLayout, QGroupBox,
                                QLabel, QPlainTextEdit, QSpinBox, QVBoxLayout)
 

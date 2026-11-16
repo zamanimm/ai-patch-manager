@@ -102,7 +102,9 @@ class ResponseNotesCoreTests(unittest.TestCase):
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 try:
-    from PySide6.QtWidgets import QApplication
+    from core.qt_binding import load_qt_modules
+    load_qt_modules()
+    from qtpy.QtWidgets import QApplication
     from ui.changes_view import ChangesView
     from ui.response_view import ResponseView
     QT_AVAILABLE = True
@@ -110,7 +112,7 @@ except ImportError:
     QT_AVAILABLE = False
 
 
-@unittest.skipUnless(QT_AVAILABLE, 'PySide6 is required for GUI tests')
+@unittest.skipUnless(QT_AVAILABLE, 'A supported Qt 6 binding is required for GUI tests')
 class ResponseNotesGuiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -122,7 +124,7 @@ class ResponseNotesGuiTests(unittest.TestCase):
         view = ChangesView(ctrl, None)
         view.reload()
         self.assertFalse(view.lbl_note.isHidden())
-        self.assertEqual(view.lbl_note.textFormat(), __import__('PySide6.QtCore', fromlist=['Qt']).Qt.PlainText)
+        self.assertEqual(view.lbl_note.textFormat(), __import__('qtpy.QtCore', fromlist=['Qt']).Qt.PlainText)
         self.assertIn('<b>', view.lbl_note.text())
         ctrl.response_notice = None
         view.reload()

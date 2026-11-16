@@ -93,6 +93,25 @@ def merge_file_changes(original: str, changes: List[Change], settings) -> str:
     return "".join(lines)
 
 
+def compute_file_result(original: str, changes: List[Change], settings) -> str:
+    """Compute one file's result using the same merge semantics as Apply.
+
+    Kept in the patch engine so History can rebuild a file with one Change
+    omitted without inventing an inverse textual patch.
+    """
+    region_ops = [c for c in changes if c.is_region_op]
+    text = merge_file_changes(original, region_ops, settings) if region_ops else original
+    for change in changes:
+        if change.operation == "create":
+            text = (change.content or "") + "\n"
+        elif change.operation == "append" and not change.has_anchor:
+            sep = "" if text.endswith("\n") or text == "" else "\n"
+            text = text + sep + (change.content or "") + "\n"
+        elif change.operation == "prepend" and not change.has_anchor:
+            text = (change.content or "") + "\n" + text
+    return text
+
+
 def plan_file_operations(changes: List[Change]) -> Dict[str, List[Change]]:
     """Group changes per file path, preserving order (apply sequence)."""
     groups: Dict[str, List[Change]] = {}

@@ -18,9 +18,9 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-from PySide6.QtCore import QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QKeySequence, QPalette, QShortcut, QTextCursor, QTextFormat
-from PySide6.QtWidgets import (QCheckBox, QDialog, QHBoxLayout, QLabel, QListWidget,
+from qtpy.QtCore import QTimer, Qt, Signal
+from qtpy.QtGui import QColor, QKeySequence, QPalette, QShortcut, QTextCursor, QTextFormat
+from qtpy.QtWidgets import (QCheckBox, QDialog, QHBoxLayout, QLabel, QListWidget,
                                QListWidgetItem, QPushButton, QSplitter,
                                QTextEdit, QVBoxLayout, QWidget)
 

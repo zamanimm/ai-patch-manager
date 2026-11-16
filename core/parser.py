@@ -165,6 +165,18 @@ _LEADING_SPACE_ENTITY = re.compile(
 )
 _SPACE_ENTITY = re.compile(r"&#(?:x20|32);", re.IGNORECASE)
 _CDATA_LINE_SLASH = re.compile(r"\\(?=\r?\n|\Z)")
+# Even one &#x20; can be a copy artifact when it occupies the indentation
+# position before a code line.  Require at least two real spaces (or a tab)
+# after the entity, so a literal explanation such as "&#x20; is a space"
+# does not get rewritten merely because it is in CDATA. No code/regex
+# string containing an entity in the middle of the line can match here.
+_SINGLE_ENTITY_INDENT = re.compile(
+    # One encoded indentation token followed by real indentation, or a
+    # standalone line made only of numeric space entities. The latter also
+    # supports CDATA whose entire payload is just &#x20;.
+    r"(?im)^[ \t]*(?:&#(?:x20|32);)(?:(?:[ \t]{2,}|\t)(?=\S)|"
+    r"[ \t]*(?:&#(?:x20|32);[ \t]*)*(?=\r?$))"
+)
 
 
 def _cdata_payloads(text: str) -> list[str]:
@@ -188,6 +200,11 @@ def _cdata_copy_signature(text: str) -> bool:
     never trigger this recovery by itself.
     """
     for inner in _cdata_payloads(text):
+        # A single encoded indentation token in otherwise normal, valid XML
+        # must also be restored.  Requiring an indentation layout avoids
+        # interpreting ordinary HTML entities in strings and documentation.
+        if _SINGLE_ENTITY_INDENT.search(inner):
+            return True
         encoded = len(_LEADING_SPACE_ENTITY.findall(inner))
         line_slashes = sum(1 for line in inner.splitlines()
                            if line.rstrip(' \t').endswith('\\'))
@@ -213,7 +230,7 @@ def _clean_pasted_cdata(content: str, copy_evidence: bool) -> str:
     # intentional. Require a repeated indentation pattern or the repeated
     # trailing-backslash pattern typical of rich-text copies.
     entity_indents = len(_LEADING_SPACE_ENTITY.findall(content))
-    if entity_indents >= 2 or slashed_lines >= 2:
+    if entity_indents >= 2 or slashed_lines >= 2 or _SINGLE_ENTITY_INDENT.search(content):
         content = _LEADING_SPACE_ENTITY.sub(
             lambda m: _SPACE_ENTITY.sub(' ', m.group(0)), content)
     if len(source_lines) >= 2 and slashed_lines >= 2 and slashed_lines / len(source_lines) >= 0.65:

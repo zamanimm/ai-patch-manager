@@ -15,13 +15,48 @@ Project tab ─► Prompt tab ─► (paste into LLM) ─► Response tab ─►
 
 ## Install and run
 
-```
-pip install -r requirements.txt
+Install one Qt 6 provider. **PySide6 is the default recommendation**:
+
+```powershell
+python -m pip install -r requirements-pyside6.txt
 python main.py
 ```
 
-The Tree-Sitter packages in `requirements.txt` are only needed for **symbol targeting** (see below).
-`python check_treesitter.py` tells you whether they work on your machine.
+If you already use PyQt6, install the equivalent PyQt6 environment instead:
+
+```powershell
+python -m pip install -r requirements-pyqt6.txt
+python main.py
+```
+
+`requirements.txt` contains only shared non-Qt dependencies (`lxml`). If you already have
+PySide6 installed, the app uses it directly: **QtPy is not required**, and you do not need to
+reinstall PySide6 or add another compatibility package. The startup loader provides the small
+`qtpy.*` import namespace internally for the PySide6 path.
+
+If you already have PySide6 or PyQt6 installed, install only the shared dependencies if needed:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+PySide6 is preferred when both bindings are installed. PyQt6 uses the real QtPy compatibility
+package (included in `requirements-pyqt6.txt`) because its scoped enum and signal APIs differ.
+To select PyQt6 explicitly for one PowerShell session, use `$env:QT_API="pyqt6"`; use
+`$env:QT_API="pyside6"` to select PySide6. Set this before starting the app. If PyQt6 is selected
+but QtPy is missing, install it with `python -m pip install qtpy` or use the PyQt6 requirements file.
+
+PyQt6 and PySide6 have different licensing terms (GPL/commercial versus LGPL/commercial options).
+Review the applicable license obligations before distributing a packaged build, especially for
+closed-source or commercial use.
+
+**Optional features:**
+- Symbol targeting (Tree-Sitter) is not required. Without it the app runs normally and the Symbol
+  checkbox is disabled. Install it only when needed: `python -m pip install -r requirements-symbols.txt`.
+  Run `python check_treesitter.py` to see which grammars work.
+- Pygments syntax highlighting can be installed separately with
+  `python -m pip install -r requirements-highlighting.txt`; without it, code viewers remain usable
+  as plain text. The two Qt provider files above include Pygments by default.
 
 **No terminal window behind the app**
 - **Windows:** double-click **`AI Patch Manager.pyw`**. It runs without any console window.
@@ -104,11 +139,24 @@ parsing does not guarantee a patch can safely be applied.
 - Status per change: *valid*, *invalid* (with the reason), or *conflict* (the file changed after the prompt was
   generated: regenerate the prompt).
 
-### 5. History tab: undo
-Every apply is a transaction with a backup. Select one, then **View Details**, **Show Diff** or
-**Undo This Transaction** (renames are undone too: the file moves back and the renamed copy is removed). The first entry is the **baseline** (a snapshot taken when the project was connected);
-selecting it shows everything that changed since then. Double-click a file to open it (after / before / current).
-History loads the newest 200 transactions first; use **Load Older** to fetch earlier pages.
+### 5. History tab: transaction and single-change undo/redo
+Every Apply is a transaction. With **Backup Before Apply** enabled, byte-exact original and post-apply
+snapshots are retained for later undo/redo. Select a transaction row to use **Undo Transaction** /
+**Redo Transaction** for the whole response. Expand a file row and select one of its
+`chg-...` rows to use **Undo Selected Change** / **Redo Selected Change**; the app rebuilds only that file from
+the original snapshot and replays the other still-active changes from the same response. Other files in the
+transaction are left untouched.
+
+Before any rollback or redo, the app verifies the current file SHA-256 and recorded permissions, checks backup
+integrity and destination collisions, and captures a recovery snapshot. If the file changed outside the app,
+a backup is missing, replay does not reproduce the expected hash, or saving history fails, the operation is
+refused or the pre-operation file is restored. Each partial undo/redo is recorded in the transaction history.
+
+Single-change undo is available for transactions created by versions that store the original change details.
+Older history entries show their change IDs but cannot safely undo one change independently; use
+**Undo Transaction** instead. The workspace baseline cannot be undone. Double-click a file/change to inspect
+its before / after / current versions. History loads the newest 200 transactions first; use **Load Older**
+to fetch earlier pages.
 
 ### 6. Instructions tab
 The fixed instructions and response format the LLM must follow. Because `<system>` is off by default, **Copy
@@ -142,8 +190,9 @@ This guide, inside the app (also Help ▸ How to Use, or `F1`).
   which are modal and hide the menu): long lines wrap in the code, diff, prompt and instruction viewers instead of
   scrolling sideways. Remembered between launches (an existing choice is preserved). The Response, Task, Errors, Run output and Log boxes always wrap, including long words/paths. Long file paths and status labels stay inside the screen.
 - **Code is syntax-highlighted** in file viewers, the line picker, diffs (each file in its own language), the prompt
-  preview, the response and the instructions. The language comes from the file extension (needs `pygments`, which is
-  in `requirements.txt`; without it the viewers simply show plain text). Light and dark themes are both supported.
+  preview, the response and the instructions. The language comes from the file extension (needs the optional
+  `pygments` package from `requirements-highlighting.txt`; without it the viewers simply show plain text).
+  Light and dark themes are both supported.
 - The file viewer and the line picker show **line numbers** that always stay in step with the code. In the file viewer,
   click a number to select that line, drag (or Shift+click) to select several; the picker has its own controls (see the
   Project tab).
@@ -213,8 +262,10 @@ function using Tree-Sitter, including nested blocks.
 - Languages: **Python, JavaScript, TypeScript / TSX, Java, C / C++** (types: function, method, class, struct,
   interface, enum). Other languages: use `<match>`.
 - The replacement overwrites the symbol's full lines (decorators are not part of a Python symbol).
-- Needs the `tree-sitter-*` packages from `requirements.txt`. If a grammar can't be loaded, the error names the
-  package to install; `python check_treesitter.py` shows what works.
+- Tree-Sitter is optional and is not part of the normal installation. If it is absent, the Symbol checkbox is
+  disabled with the install command; all other target modes continue to work. Install the optional packages with
+  `python -m pip install -r requirements-symbols.txt`. If only some grammars are installed, Symbol targeting is
+  enabled only for grammars that successfully load; `python check_treesitter.py` reports the available languages.
 
 ---
 
@@ -261,7 +312,8 @@ See `PHASES_1_TO_3_REEVALUATION.md` for a change-by-change review. The original 
 | `CONFLICT: the file changed after the prompt was generated` | regenerate the prompt so the LLM sees the current file |
 | `overlaps with chg-…` | two changes edit the same lines; merge them into one |
 | `inserted code starts at column 0 but the anchor line is indented` (warning) | check indentation, especially in Python |
-| symbol errors mentioning a grammar | `python check_treesitter.py`, then `pip install` the package it names |
+| Symbol targeting is disabled | Install `python -m pip install -r requirements-symbols.txt`, restart the app, and run `python check_treesitter.py` |
+| Qt binding cannot be loaded | With existing PySide6, QtPy is not needed. Otherwise install `requirements-pyside6.txt` or `requirements-pyqt6.txt`; if both are present, select with `QT_API` |
 | a tab, save, import or project open operation reports a recoverable error | See the Log dock and the per-user `ui_errors.log` traceback for details |
 
 ---
@@ -318,3 +370,22 @@ A response may include one `<note type="warning">Important action or risk</note>
 Warning notes appear in the Changes tab and in a dialog after an explicit Parse;
 info notes appear only in the Changes tab. Both are unverified AI-generated
 text and cannot override validation. See [NOTE_FEATURE.md](NOTE_FEATURE.md).
+
+
+### Copy/paste recovery: standalone numeric spaces in CDATA
+
+The parser recovers an isolated `&#x20;` / `&#32;` in indentation and even an
+entity-only CDATA line. See `SINGLE_CDATA_SPACE_ENTITY_FIX.md` for behavior
+and the ambiguity warning about intentionally literal HTML entities.
+
+
+### Hybrid rollback storage (2026-11-16)
+
+New transactions keep one immutable byte-exact `.orig` snapshot. Redo uses a
+verified line-based byte delta when it is at most 70% of the post-Apply file
+size (files up to 2 MiB / 20,000 lines); otherwise it falls back to a full
+`.new` snapshot. Rename-only files can reuse `.orig` when bytes and permissions
+are unchanged, and deletions use a marker. Single-change Undo/Redo no longer
+persists another full `.current` snapshot; History previews reconstruct partial
+states from `.orig` and the recorded active changes. Legacy `.new` and `.current`
+snapshots remain readable. See `HYBRID_ROLLBACK_OPTIMIZATION.md`.

@@ -1,0 +1,2 @@
+# Optional syntax highlighting. Without Pygments, code viewers remain usable as plain text.
+pygments>=2.14
